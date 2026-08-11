@@ -90,6 +90,10 @@ function App() {
       <main>
         <Dashboard />
       </main>
+
+      <footer style={{ textAlign: 'center', padding: '2rem 0', opacity: 0.7, fontSize: '0.9rem' }}>
+        Powered by <a href="https://getsongbpm.com/" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-green)', textDecoration: 'none' }}>GetSongBPM</a>
+      </footer>
     </div>
   );
 }
