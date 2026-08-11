@@ -1,0 +1,20 @@
+Spotify Sorter App - Quick Start Guide
+
+--- HOW TO START THE APP ---
+1. Open a terminal (PowerShell, Command Prompt, or VS Code terminal).
+2. Navigate to this project folder (Spotify-Sorter-App).
+3. Type the following command and press Enter:
+   npm run dev
+
+4. Once the server starts, open your web browser and go to:
+   https://127.0.0.1:8888
+
+--- HOW TO STOP THE APP ---
+1. Go back to the terminal where the app is running.
+2. Press Ctrl + C on your keyboard.
+3. If it asks "Terminate batch job (Y/N)?", type Y and press Enter.
+
+--- IMPORTANT REMINDERS ---
+- Spotify Developer Quota: Because this app is in "Development Mode" on Spotify, you have a daily limit for API requests (QUOTA_EXCEEDED).
+- Caching: The app automatically caches massive playlists to your hard drive to save your quota!
+- Era & Pacing Algorithm: The app will export suggestions into brand new private playlists rather than touching your original playlists.
