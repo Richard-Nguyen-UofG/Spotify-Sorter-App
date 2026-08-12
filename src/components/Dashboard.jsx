@@ -19,7 +19,11 @@ export default function Dashboard() {
         setPlaylists(data);
       } catch (err) {
         console.error(err);
-        setError(`Failed to fetch playlists: ${err.message}`);
+        if (err.message.includes('401')) {
+          setError(`Your Spotify session expired! Please hit "Logout" at the top right and log back in.`);
+        } else {
+          setError(`Failed to fetch playlists: ${err.message}`);
+        }
       } finally {
         setLoading(false);
       }

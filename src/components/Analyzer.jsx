@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getPlaylistTracks, addTracksToPlaylist, getCurrentUser, createPlaylist } from '../lib/spotifyAPI';
+import { fetchBPMAndKey } from '../lib/getSongBPM';
+import { isHarmonicallyCompatible, getTrueBpmDifference, calculateStandardDeviation } from '../lib/musicMath';
 import { Check, X, AlertCircle } from 'lucide-react';
 
 export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
@@ -9,6 +11,7 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
   const [error, setError] = useState(null);
   const [committing, setCommitting] = useState(false);
   const [commitResult, setCommitResult] = useState(null);
+  const [progressMsg, setProgressMsg] = useState("");
 
   useEffect(() => {
     async function performAnalysis() {
@@ -52,11 +55,48 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
         }
         const uniqueMasterTracks = Array.from(uniqueMasterTracksMap.values());
 
+        setStatus("Fetching Acoustic Data (BPM & Key)...");
+        const allTracksToAnalyze = [...targetTracks, ...uniqueMasterTracks];
+        const tracksToFetch = new Map();
+        for (const t of allTracksToAnalyze) {
+           if (t && t.id) {
+             let dedupKey = t.id;
+             if (t.name && t.artists && t.artists.length > 0) {
+               dedupKey = `${t.artists[0].name.toLowerCase()}_${t.name.toLowerCase().split(/ - |\(/)[0].trim()}`;
+             }
+             if (!tracksToFetch.has(dedupKey)) {
+                tracksToFetch.set(dedupKey, t);
+             }
+           }
+        }
+        
+        const trackArray = Array.from(tracksToFetch.values());
+        let currentIdx = 0;
+        
+        for (const t of trackArray) {
+           currentIdx++;
+           setProgressMsg(`${currentIdx} / ${trackArray.length} tracks...`);
+           
+           if (t.name && t.artists && t.artists.length > 0) {
+              const acoustic = await fetchBPMAndKey(t.name, t.artists[0].name);
+              t.bpm = acoustic.tempo;
+              t.key = acoustic.key;
+           } else {
+              t.bpm = null;
+              t.key = null;
+           }
+        }
+        setProgressMsg("");
+
         setStatus("Calculating Vibe Profile (Era, Pacing & Artists)...");
         let totalYear = 0;
         let totalDuration = 0;
+        let totalBPM = 0;
         let validYearCount = 0;
+        let validBPMCount = 0;
         const artistCounts = {};
+        const keyCounts = {};
+        const bpmArray = [];
 
         for (const t of targetTracks) {
           if (t.album && t.album.release_date) {
@@ -71,6 +111,16 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
             totalDuration += t.duration_ms;
           }
 
+          if (t.bpm) {
+            totalBPM += t.bpm;
+            validBPMCount++;
+            bpmArray.push(t.bpm);
+          }
+          
+          if (t.key) {
+             keyCounts[t.key] = (keyCounts[t.key] || 0) + 1;
+          }
+
           if (t.artists && t.artists.length > 0) {
             t.artists.forEach(a => {
               artistCounts[a.name] = (artistCounts[a.name] || 0) + 1;
@@ -80,6 +130,14 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
 
         const avgYear = validYearCount > 0 ? totalYear / validYearCount : new Date().getFullYear();
         const avgDuration = targetTracks.length > 0 ? totalDuration / targetTracks.length : 180000;
+        const avgBPM = validBPMCount > 0 ? totalBPM / validBPMCount : null;
+        
+        // Calculate BPM Flexibility based on standard deviation
+        const bpmStdDev = calculateStandardDeviation(bpmArray);
+        const bpmFlexibility = Math.max(5, Math.min(30, Math.round(bpmStdDev + 5)));
+        
+        const sortedKeys = Object.entries(keyCounts).sort((a, b) => b[1] - a[1]);
+        const dominantKey = sortedKeys.length > 0 ? sortedKeys[0][0] : null;
         
         const sortedArtists = Object.entries(artistCounts).sort((a, b) => b[1] - a[1]);
         // Consider artists that appear multiple times as "Core Artists", or just the top 10 if diverse
@@ -88,6 +146,9 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
         const vibeProfile = {
           avgYear,
           avgDuration,
+          avgBPM,
+          bpmFlexibility,
+          dominantKey,
           topArtists,
           topArtistNames: Array.from(topArtists).slice(0, 3)
         };
@@ -100,9 +161,14 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
         }).filter(t => {
           const yearDiff = Math.abs(t.year - avgYear);
           const durationDiff = Math.abs(t.duration - avgDuration);
+          let bpmDiff = 0;
+          if (avgBPM && t.track.bpm) {
+             bpmDiff = getTrueBpmDifference(t.track.bpm, avgBPM);
+          }
           
-          // An outlier is > 20 years away from average, OR length differs by > 2.5 minutes (150,000 ms)
-          return yearDiff > 20 || durationDiff > 150000;
+          const outlierBpmLimit = vibeProfile.bpmFlexibility * 1.5;
+          // An outlier is > 20 years away, OR length differs by > 2.5 mins, OR BPM differs beyond dynamic limit
+          return yearDiff > 20 || durationDiff > 150000 || bpmDiff > outlierBpmLimit;
         });
 
         // Find Fits
@@ -149,8 +215,17 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
             });
           }
 
+          let acousticMatch = false;
+          if (avgBPM && t.track.bpm && dominantKey && t.track.key) {
+             const bpmDiff = getTrueBpmDifference(t.track.bpm, avgBPM);
+             if (bpmDiff <= vibeProfile.bpmFlexibility && isHarmonicallyCompatible(t.track.key, dominantKey)) {
+                acousticMatch = true;
+                if (!matchedArtist) matchedArtist = "Acoustic Match";
+             }
+          }
+
           // Attach matchedArtist for grouping later
-          if (hasOverlap && yearDiff <= 10 && durationDiff <= 90000) {
+          if ((hasOverlap || acousticMatch) && yearDiff <= 10 && durationDiff <= 90000) {
             t.matchedArtist = matchedArtist;
             return true;
           }
@@ -197,7 +272,11 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
 
       } catch (err) {
         console.error(err);
-        setError(err.message);
+        if (err.message.includes('401')) {
+          setError(`Your Spotify session expired! Please click "Go Back", hit "Logout" at the top right, and log back in.`);
+        } else {
+          setError(err.message);
+        }
       } finally {
         setLoading(false);
       }
@@ -243,7 +322,11 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
       setCommitResult(msg || "No playlists were created because there were no suggestions.");
     } catch (err) {
       console.error(err);
-      setError(`Failed to create playlists on Spotify: ${err.message}`);
+      if (err.message.includes('401')) {
+        setError(`Failed to create playlists: Your Spotify session expired! Please click "Go Back", hit "Logout" at the top right, and log back in.`);
+      } else {
+        setError(`Failed to create playlists on Spotify: ${err.message}`);
+      }
     } finally {
       setCommitting(false);
     }
@@ -260,6 +343,7 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
       <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem' }}>
         <h3>{committing ? "Creating Playlists on Spotify..." : "Analyzing Playlists"}</h3>
         <p style={{ color: 'var(--text-secondary)' }}>{status}</p>
+        {progressMsg && <p style={{ color: 'var(--accent-green)', fontWeight: 'bold' }}>{progressMsg}</p>}
         <div style={{ marginTop: '2rem', display: 'flex', justifyContent: 'center' }}>
           <div className="animate-fade-in" style={{
             width: '40px', height: '40px', border: '4px solid var(--glass-border)', 
@@ -294,6 +378,8 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
           <h2>Analysis: {targetPlaylist.name}</h2>
           <p style={{ color: 'var(--text-secondary)' }}>
             Core Artists: {analysis.vibeProfile.topArtistNames.join(', ') || 'Mixed'} | Era: ~{Math.round(analysis.vibeProfile.avgYear)} | Avg Length: {formatTime(analysis.vibeProfile.avgDuration)}
+            {analysis.vibeProfile.avgBPM && ` | Avg BPM: ${Math.round(analysis.vibeProfile.avgBPM)} (±${analysis.vibeProfile.bpmFlexibility})`}
+            {analysis.vibeProfile.dominantKey && ` | Key: ${analysis.vibeProfile.dominantKey}`}
           </p>
         </div>
         <button className="btn-secondary" onClick={onBack}>Back to Dashboard</button>
@@ -309,7 +395,11 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
               <div key={o.track.id} className="glass-panel" style={{ padding: '0.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div style={{ overflow: 'hidden' }}>
                   <p style={{ margin: 0, fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{o.track.name}</p>
-                  <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{o.track.artists[0].name} • {o.year} • {formatTime(o.duration)}</p>
+                  <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                    {o.track.artists[0].name} • {o.year} • {formatTime(o.duration)}
+                    {o.track.bpm && ` • ${Math.round(o.track.bpm)} BPM`}
+                    {o.track.key && ` • ${o.track.key}`}
+                  </p>
                 </div>
               </div>
             ))}
@@ -326,7 +416,11 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
               <div key={f.track.id} className="glass-panel" style={{ padding: '0.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div style={{ overflow: 'hidden' }}>
                   <p style={{ margin: 0, fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.track.name}</p>
-                  <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{f.track.artists[0].name} • {f.year} • {formatTime(f.duration)}</p>
+                  <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                    {f.track.artists[0].name} • {f.year} • {formatTime(f.duration)}
+                    {f.track.bpm && ` • ${Math.round(f.track.bpm)} BPM`}
+                    {f.track.key && ` • ${f.track.key}`}
+                  </p>
                 </div>
               </div>
             ))}
