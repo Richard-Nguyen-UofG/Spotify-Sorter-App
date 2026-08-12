@@ -232,42 +232,81 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
           return false;
         });
 
-        // Group by matched artist
+        // Group by matched artist and calculate a match score for each track
         const fitsByArtist = {};
         for (const fit of potentialFits) {
+           // Match score (lower is better)
+           let score = 0;
+           
+           if (avgBPM && fit.track.bpm) {
+              score += getTrueBpmDifference(fit.track.bpm, avgBPM);
+           } else {
+              score += 20; // Penalty for missing BPM
+           }
+
+           if (dominantKey && fit.track.key) {
+              if (fit.track.key === dominantKey) {
+                 score -= 5; // Bonus for exact key match
+              } else if (isHarmonicallyCompatible(fit.track.key, dominantKey)) {
+                 score -= 2; // Bonus for compatible key
+              } else {
+                 score += 10; // Penalty for incompatible key
+              }
+           } else {
+              score += 10; // Penalty for missing key
+           }
+
+           fit.matchScore = score;
+
            if (!fitsByArtist[fit.matchedArtist]) {
              fitsByArtist[fit.matchedArtist] = [];
            }
            fitsByArtist[fit.matchedArtist].push(fit);
         }
 
-        // Select 3 most popular and 2 random
+        // Select the top best acoustic matches per artist group
         let fits = [];
         for (const artist in fitsByArtist) {
            let artistTracks = fitsByArtist[artist];
            
-           // Sort by popularity descending
-           artistTracks.sort((a, b) => {
-             const popA = a.track.popularity || 0;
-             const popB = b.track.popularity || 0;
-             return popB - popA;
-           });
+           // Sort by match score ascending (lower is better)
+           artistTracks.sort((a, b) => a.matchScore - b.matchScore);
 
-           // Take top 3 most popular
-           const topPopular = artistTracks.slice(0, 3);
+           // Take top matches up to the cap
+           const topMatches = artistTracks.slice(0, MAX_SUGGESTIONS_PER_ARTIST);
            
-           // Take the remaining tracks, randomize them, and pick up to 2
-           let remaining = artistTracks.slice(3);
-           remaining.sort(() => Math.random() - 0.5);
-           const randomPicks = remaining.slice(0, 2);
+           fits = [...fits, ...topMatches];
+        }
 
-           fits = [...fits, ...topPopular, ...randomPicks];
+        // Sort the final list of fits so the absolute best matches across all artists appear first
+        fits.sort((a, b) => a.matchScore - b.matchScore);
+
+        // Find duplicates in target playlist
+        const trackSeen = new Map();
+        const duplicates = [];
+
+        for (const t of targetTracks) {
+          if (!t || !t.id) continue;
+          
+          let dedupKey = t.id;
+          if (t.name && t.artists && t.artists.length > 0) {
+            const baseName = t.name.toLowerCase().split(/ - |\(/)[0].trim();
+            const artistName = t.artists[0].name.toLowerCase();
+            dedupKey = `${artistName}_${baseName}`;
+          }
+
+          if (trackSeen.has(dedupKey)) {
+             duplicates.push(t);
+          } else {
+             trackSeen.set(dedupKey, t);
+          }
         }
 
         setAnalysis({
           vibeProfile,
           outliers,
-          fits: fits.slice(0, 50)
+          fits: fits.slice(0, 50),
+          duplicates
         });
 
       } catch (err) {
@@ -428,6 +467,25 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
           </div>
         </div>
       </div>
+
+      {analysis.duplicates && analysis.duplicates.length > 0 && (
+        <div className="glass-panel" style={{ marginTop: '2rem', padding: '1rem', border: '1px solid var(--accent-red)', backgroundColor: 'rgba(255, 59, 48, 0.05)' }}>
+          <h3 style={{ color: 'var(--accent-red)', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <AlertCircle size={20} /> Duplicate Songs Detected ({analysis.duplicates.length})
+          </h3>
+          <p style={{ color: 'var(--text-secondary)', marginBottom: '1rem' }}>
+            The following songs appear multiple times in your playlist. We recommend manually removing them on Spotify.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '0.5rem', maxHeight: '150px', overflowY: 'auto' }}>
+            {analysis.duplicates.map((d, idx) => (
+              <div key={`${d.id}-${idx}`} style={{ padding: '0.5rem', backgroundColor: 'rgba(255, 255, 255, 0.05)', borderRadius: '4px' }}>
+                <p style={{ margin: 0, fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.name}</p>
+                <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{d.artists?.[0]?.name}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div style={{ display: 'flex', justifyContent: 'center', marginTop: '2rem', paddingTop: '2rem', borderTop: '1px solid var(--glass-border)' }}>
         <button 
