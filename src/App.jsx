@@ -29,6 +29,14 @@ function App() {
 
   useEffect(() => {
     const initializeAuth = async () => {
+      // If the configured client ID changed, invalidate old tokens so a fresh token is acquired
+      const previousClientId = localStorage.getItem('spotify_client_id_used');
+      if (previousClientId && previousClientId !== clientId) {
+        removeToken();
+        localStorage.removeItem('spotify_cached_user_playlists');
+      }
+      localStorage.setItem('spotify_client_id_used', clientId);
+
       // Check local storage for token first
       let currentToken = getToken();
       

@@ -99,15 +99,15 @@ export async function getCurrentUserPlaylists(forceRefresh = false) {
 
 const memoryCache = {};
 
-export async function getPlaylistTracks(playlistId, forceRefresh = false, onProgress = null) {
+export async function getPlaylistTracks(playlistId, forceRefresh = false, onProgress = null, expectedSnapshotId = null) {
   // 1. Check in-memory cache (0ms)
   if (!forceRefresh && memoryCache[playlistId]) {
     return memoryCache[playlistId];
   }
 
-  // 2. Check IndexedDB cache (1ms, virtually unlimited size for 10,000+ tracks)
+  // 2. Check IndexedDB cache (1ms, verifies snapshot_id if provided)
   if (!forceRefresh) {
-    const idbCached = await getCachedPlaylistTracks(playlistId);
+    const idbCached = await getCachedPlaylistTracks(playlistId, expectedSnapshotId);
     if (idbCached && idbCached.length > 0) {
       memoryCache[playlistId] = idbCached;
       return idbCached;
@@ -149,15 +149,15 @@ export async function getPlaylistTracks(playlistId, forceRefresh = false, onProg
     }
     url = response.next;
 
-    // Gentle 30ms delay between pages for huge playlists to prevent hitting Spotify 429
+    // 50ms pacing delay between pages for large playlists
     if (url) {
-      await new Promise(r => setTimeout(r, 30));
+      await new Promise(r => setTimeout(r, 50));
     }
   }
 
-  // Save to Memory Cache & IndexedDB
+  // Save to Memory Cache & IndexedDB with snapshot_id
   memoryCache[playlistId] = allTracks;
-  await saveCachedPlaylistTracks(playlistId, allTracks);
+  await saveCachedPlaylistTracks(playlistId, allTracks, '', expectedSnapshotId);
 
   return allTracks;
 }

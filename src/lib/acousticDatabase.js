@@ -94,8 +94,9 @@ function openIndexedDB() {
 
 /**
  * Gets cached playlist track list from IndexedDB.
+ * If expectedSnapshotId is provided, returns null if Spotify has an updated version.
  */
-export async function getCachedPlaylistTracks(playlistId) {
+export async function getCachedPlaylistTracks(playlistId, expectedSnapshotId = null) {
   if (!playlistId) return null;
   const db = await openIndexedDB();
   if (!db) return null;
@@ -105,7 +106,17 @@ export async function getCachedPlaylistTracks(playlistId) {
       const store = tx.objectStore(PLAYLIST_STORE_NAME);
       const req = store.get(playlistId);
       req.onsuccess = () => {
-        resolve(req.result ? req.result.tracks : null);
+        const record = req.result;
+        if (!record || !record.tracks) {
+          resolve(null);
+          return;
+        }
+        // If snapshot_id is specified and does not match, cache is outdated
+        if (expectedSnapshotId && record.snapshot_id && record.snapshot_id !== expectedSnapshotId) {
+          resolve(null);
+          return;
+        }
+        resolve(record.tracks);
       };
       req.onerror = () => resolve(null);
     } catch {
@@ -117,7 +128,7 @@ export async function getCachedPlaylistTracks(playlistId) {
 /**
  * Saves playlist track list to IndexedDB (virtually unlimited size, handles 10,000+ tracks).
  */
-export async function saveCachedPlaylistTracks(playlistId, tracks, playlistName = '') {
+export async function saveCachedPlaylistTracks(playlistId, tracks, playlistName = '', snapshotId = null) {
   if (!playlistId || !tracks) return;
   const db = await openIndexedDB();
   if (!db) return;
@@ -128,6 +139,7 @@ export async function saveCachedPlaylistTracks(playlistId, tracks, playlistName 
       store.put({
         playlist_id: playlistId,
         name: playlistName,
+        snapshot_id: snapshotId,
         track_count: tracks.length,
         tracks: tracks,
         cached_at: Date.now()
