@@ -24,3 +24,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Acoustic database exports / local JSON backups
+spotify_sorter_acoustic_library*.json
+*.backup.json

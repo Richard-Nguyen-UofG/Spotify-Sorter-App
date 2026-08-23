@@ -8,6 +8,7 @@
   --accent-green: #1DB954; /* Spotify green */
   --accent-green-hover: #1ed760;
   --accent-purple: #8A2BE2;
+  --accent-purple-hover: #9d4edd;
   --accent-red: #E74C3C;
 }
 
@@ -25,20 +26,51 @@ body {
   overflow-x: hidden;
 }
 
-/* Glassmorphism utility classes */
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Surface panel utility classes (Clean dark glass without GPU iframe glitch) */
 .glass-panel {
-  background: var(--bg-panel);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  background: rgba(18, 18, 24, 0.88);
   border: 1px solid var(--glass-border);
   border-radius: 16px;
   padding: 1.5rem;
-  transition: all 0.3s ease;
+  transition: background 0.3s ease, border-color 0.3s ease;
 }
 
 .glass-panel:hover {
-  background: var(--bg-panel-hover);
-  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(24, 24, 32, 0.95);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+/* Crisp Track Row Card (No backdrop-filter to avoid browser GPU iframe artifacts) */
+.track-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.track-card:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.15);
 }
 
 /* App Container */
@@ -102,11 +134,14 @@ body {
   font-weight: 500;
   font-size: 0.9rem;
   cursor: pointer;
+  display: flex;
+  align-items: center;
   transition: all 0.2s ease;
 }
 
 .btn-secondary:hover {
   background: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
 }
 
 /* Login Screen */
@@ -142,5 +177,14 @@ body {
 }
 
 .animate-fade-in {
-  animation: fadeIn 0.5s ease forwards;
+  animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin {
+  animation: spin 1.5s linear infinite;
 }

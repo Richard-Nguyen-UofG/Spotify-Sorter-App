@@ -9,5 +9,12 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 8888,
     strictPort: true,
+    proxy: {
+      '/api/musicae': {
+        target: 'https://spotify-extended-audio-features-api.p.rapidapi.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/musicae/, '')
+      }
+    }
   }
 })
