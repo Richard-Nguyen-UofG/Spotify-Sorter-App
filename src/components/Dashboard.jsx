@@ -20,42 +20,49 @@ export default function Dashboard({ onOpenLibrary }) {
   const [masterPools, setMasterPools] = useState([]);
   const [analyzing, setAnalyzing] = useState(false);
   const [syncingPlaylistId, setSyncingPlaylistId] = useState(null);
+  const [refreshingPlaylists, setRefreshingPlaylists] = useState(false);
 
   // Harmonic Flow sequencing state
   const [flowInProgressId, setFlowInProgressId] = useState(null);
   const [flowNotification, setFlowNotification] = useState(null);
 
-  useEffect(() => {
-    async function loadPlaylists() {
-      try {
-        const data = await getCurrentUserPlaylists();
-        setPlaylists(data);
+  const loadPlaylists = async (forceRefresh = false) => {
+    try {
+      if (forceRefresh) setRefreshingPlaylists(true);
+      else setLoading(true);
+      setError(null);
 
-        // Restore saved master pool selections from localStorage
-        const savedMasterIdsRaw = localStorage.getItem('spotify_saved_master_pool_ids');
-        if (savedMasterIdsRaw) {
-          try {
-            const savedIds = JSON.parse(savedMasterIdsRaw);
-            if (Array.isArray(savedIds) && savedIds.length > 0) {
-              const restoredPools = data.filter(p => savedIds.includes(p.id));
-              setMasterPools(restoredPools);
-            }
-          } catch {
-            // Ignore parse errors
+      const data = await getCurrentUserPlaylists(forceRefresh);
+      setPlaylists(data);
+
+      // Restore saved master pool selections from localStorage
+      const savedMasterIdsRaw = localStorage.getItem('spotify_saved_master_pool_ids');
+      if (savedMasterIdsRaw) {
+        try {
+          const savedIds = JSON.parse(savedMasterIdsRaw);
+          if (Array.isArray(savedIds) && savedIds.length > 0) {
+            const restoredPools = data.filter(p => savedIds.includes(p.id));
+            setMasterPools(restoredPools);
           }
+        } catch {
+          // Ignore parse errors
         }
-      } catch (err) {
-        console.error(err);
-        if (err.message?.includes('401')) {
-          setError(`Your Spotify session expired! Please hit "Logout" at the top right and log back in.`);
-        } else {
-          setError(`Failed to fetch playlists: ${err.message}`);
-        }
-      } finally {
-        setLoading(false);
       }
+    } catch (err) {
+      console.error(err);
+      if (err.message?.includes('401')) {
+        setError(`Your Spotify session expired! Please hit "Logout" at the top right and log back in.`);
+      } else {
+        setError(err.message);
+      }
+    } finally {
+      setLoading(false);
+      setRefreshingPlaylists(false);
     }
-    loadPlaylists();
+  };
+
+  useEffect(() => {
+    loadPlaylists(false);
   }, []);
 
   const toggleMasterPool = (playlist) => {
@@ -66,7 +73,6 @@ export default function Dashboard({ onOpenLibrary }) {
       updated = [...masterPools, playlist];
     }
     setMasterPools(updated);
-    // Persist semi-permanently to localStorage
     const poolIds = updated.map(p => p.id);
     localStorage.setItem('spotify_saved_master_pool_ids', JSON.stringify(poolIds));
   };
@@ -76,7 +82,7 @@ export default function Dashboard({ onOpenLibrary }) {
     try {
       setSyncingPlaylistId(playlist.id);
       setFlowNotification({ type: 'info', message: `Refreshing "${playlist.name}" from Spotify...` });
-      await getPlaylistTracks(playlist.id, true); // forceRefresh=true
+      await getPlaylistTracks(playlist.id, true);
       setFlowNotification({ type: 'success', message: `✓ "${playlist.name}" refreshed and cached in IndexedDB!` });
     } catch (err) {
       console.error(err);
@@ -120,8 +126,7 @@ export default function Dashboard({ onOpenLibrary }) {
       });
 
       // Reload playlist list
-      const refreshedPlaylists = await getCurrentUserPlaylists();
-      setPlaylists(refreshedPlaylists);
+      await loadPlaylists(true);
 
     } catch (err) {
       console.error(err);
@@ -137,14 +142,30 @@ export default function Dashboard({ onOpenLibrary }) {
 
   if (loading) {
     return (
-      <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem' }}>
+      <div className="glass-panel" style={{ textAlign: 'center', padding: '3.5rem 2rem', maxWidth: '600px', margin: '3rem auto' }}>
+        <RefreshCw size={40} className="animate-spin" color="var(--accent-green)" style={{ marginBottom: '1rem' }} />
         <h3>Loading your playlists from Spotify...</h3>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.5rem' }}>Fetching your library overview</p>
       </div>
     );
   }
 
   if (error) {
-    return <div className="glass-panel"><p style={{ color: 'var(--accent-red)' }}>{error}</p></div>;
+    return (
+      <div className="glass-panel animate-fade-in" style={{ padding: '2.5rem', textAlign: 'center', maxWidth: '600px', margin: '3rem auto' }}>
+        <div style={{ color: 'var(--accent-red)', fontSize: '2.5rem', marginBottom: '0.5rem' }}>⚠️</div>
+        <h3 style={{ color: 'var(--accent-red)', marginBottom: '0.75rem' }}>Spotify Request Cooldown</h3>
+        <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', fontSize: '0.95rem', lineHeight: '1.5' }}>{error}</p>
+        <button 
+          className="btn-primary" 
+          onClick={() => loadPlaylists(true)}
+          style={{ margin: '0 auto' }}
+        >
+          <RefreshCw size={16} />
+          Retry Connection
+        </button>
+      </div>
+    );
   }
 
   return (

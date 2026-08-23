@@ -29,22 +29,24 @@ async function fetchWebApi(endpoint, method = 'GET', body, retries = 3) {
 
   if (res.status === 429) {
     const retryAfter = res.headers.get('Retry-After');
-    const retrySecs = retryAfter ? parseInt(retryAfter, 10) : 5;
+    const retrySecs = retryAfter ? parseInt(retryAfter, 10) : null;
     
-    // Auto-retry small cooldowns (<= 6 seconds)
-    if (retries > 0 && retrySecs <= 6) {
+    // Auto-retry short cooldowns if specified by Spotify
+    if (retries > 0 && retrySecs && retrySecs <= 6) {
       const waitTime = retrySecs * 1000;
       console.warn(`Spotify rate limited (429). Auto-waiting ${retrySecs}s before retrying...`);
       await new Promise(resolve => setTimeout(resolve, waitTime));
       return fetchWebApi(endpoint, method, body, retries - 1);
     }
 
-    // Format readable cooldown message
-    const timeFormatted = retrySecs >= 60 
-      ? `${Math.ceil(retrySecs / 60)} minute${Math.ceil(retrySecs / 60) > 1 ? 's' : ''}`
-      : `${retrySecs} second${retrySecs > 1 ? 's' : ''}`;
+    if (retrySecs) {
+      const timeFormatted = retrySecs >= 60 
+        ? `${Math.ceil(retrySecs / 60)} minute${Math.ceil(retrySecs / 60) > 1 ? 's' : ''}`
+        : `${retrySecs} second${retrySecs > 1 ? 's' : ''}`;
+      throw new Error(`Spotify Rate Limited (429): Spotify is cooling down API requests for your account. Please wait approximately ${timeFormatted} (${retrySecs}s) before trying again.`);
+    }
 
-    throw new Error(`Spotify Rate Limited (429): Spotify is cooling down API requests for your account. Please wait approximately ${timeFormatted} (${retrySecs}s) before trying again.`);
+    throw new Error(`Spotify Rate Limited (429): Spotify temporarily paused API requests after fetching large batches of tracks. Spotify limits typically reset in 5–10 minutes. Please take a short break before retrying.`);
   }
 
   if (!res.ok) {
@@ -56,7 +58,24 @@ async function fetchWebApi(endpoint, method = 'GET', body, retries = 3) {
   return text ? JSON.parse(text) : {};
 }
 
-export async function getCurrentUserPlaylists() {
+export async function getCurrentUserPlaylists(forceRefresh = false) {
+  const cacheKey = 'spotify_cached_user_playlists';
+  
+  // Return cached playlist list if available
+  if (!forceRefresh) {
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      } catch {
+        // Ignore cache parse error
+      }
+    }
+  }
+
   let allPlaylists = [];
   let url = 'me/playlists?limit=50';
   
@@ -68,6 +87,13 @@ export async function getCurrentUserPlaylists() {
     }
     url = response.next;
   }
+
+  try {
+    localStorage.setItem(cacheKey, JSON.stringify(allPlaylists));
+  } catch {
+    // Ignore storage quota
+  }
+
   return allPlaylists;
 }
 
