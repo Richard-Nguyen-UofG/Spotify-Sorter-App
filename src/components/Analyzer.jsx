@@ -27,6 +27,8 @@ import {
   Pause,
   Plus, 
   Sliders, 
+  Filter,
+  RotateCcw,
   ShieldCheck
 } from 'lucide-react';
 
@@ -70,6 +72,58 @@ export function getNormalizedSongKey(track) {
   return `${normArtist}___${normTitle}`;
 }
 
+/**
+ * Clean dual-thumb double-ended range slider
+ */
+function DualRangeSlider({ min, max, step = 1, minValue, maxValue, onChange, color = '#1DB954' }) {
+  const minPercent = Math.min(100, Math.max(0, ((minValue - min) / (max - min)) * 100));
+  const maxPercent = Math.min(100, Math.max(0, ((maxValue - min) / (max - min)) * 100));
+
+  const handleMinChange = (e) => {
+    const val = Math.min(Number(e.target.value), maxValue);
+    onChange(val, maxValue);
+  };
+
+  const handleMaxChange = (e) => {
+    const val = Math.max(Number(e.target.value), minValue);
+    onChange(minValue, val);
+  };
+
+  return (
+    <div className="dual-slider-container">
+      <div className="dual-slider-track-bg" />
+      <div 
+        className="dual-slider-track-active" 
+        style={{
+          left: `${minPercent}%`,
+          width: `${Math.max(0, maxPercent - minPercent)}%`,
+          backgroundColor: color
+        }}
+      />
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={minValue}
+        onChange={handleMinChange}
+        className="dual-slider-input"
+        style={{ zIndex: minValue > max - 10 ? 5 : 3 }}
+      />
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={maxValue}
+        onChange={handleMaxChange}
+        className="dual-slider-input"
+        style={{ zIndex: 4 }}
+      />
+    </div>
+  );
+}
+
 export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState("Initializing...");
@@ -88,7 +142,19 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
   const [addedTrackIds, setAddedTrackIds] = useState(new Set());
   const [removedTrackIds, setRemovedTrackIds] = useState(new Set());
   const [keptTrackIds, setKeptTrackIds] = useState(new Set());
+  const [dismissedFitTrackIds, setDismissedFitTrackIds] = useState(new Set()); // strictly in-memory (resets on re-analyze/refresh)
   const [actionInProgressId, setActionInProgressId] = useState(null);
+
+  // Double-Ended Sliding Acoustic Filter State
+  const [minEnergy, setMinEnergy] = useState(0);       // 0% - 100%
+  const [maxEnergy, setMaxEnergy] = useState(100);     // 0% - 100%
+  const [minValence, setMinValence] = useState(0);     // 0% - 100% (Mood)
+  const [maxValence, setMaxValence] = useState(100);   // 0% - 100%
+  const [minDance, setMinDance] = useState(0);         // 0% - 100% (Danceability)
+  const [maxDance, setMaxDance] = useState(100);       // 0% - 100%
+  const [minBpm, setMinBpm] = useState(50);            // 50 - 220 BPM
+  const [maxBpm, setMaxBpm] = useState(220);           // 50 - 220 BPM
+  const [showFilterDrawer, setShowFilterDrawer] = useState(false);
 
   const performAnalysis = useCallback(async () => {
     try {
@@ -381,16 +447,91 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
     performAnalysis();
   }, [performAnalysis]);
 
+  // Active filter count and reset handler
+  const activeFilterCount = (minEnergy > 0 || maxEnergy < 100 ? 1 : 0) + 
+                            (minValence > 0 || maxValence < 100 ? 1 : 0) + 
+                            (minDance > 0 || maxDance < 100 ? 1 : 0) + 
+                            (minBpm > 50 || maxBpm < 220 ? 1 : 0);
+
+  const handleResetFilters = () => {
+    setMinEnergy(0);
+    setMaxEnergy(100);
+    setMinValence(0);
+    setMaxValence(100);
+    setMinDance(0);
+    setMaxDance(100);
+    setMinBpm(50);
+    setMaxBpm(220);
+  };
+
   const displayedFits = useMemo(() => {
     if (!analysis?.allFits) return [];
-    const fits = [...analysis.allFits];
+    // 1. Filter out dismissed / hidden tracks for this session
+    let fits = analysis.allFits.filter(f => !dismissedFitTrackIds.has(f.track.id));
+
+    // 2. Double-Ended Acoustic Range Filters
+    if (minEnergy > 0 || maxEnergy < 100) {
+      fits = fits.filter(f => {
+        if (f.track.energy === null || f.track.energy === undefined) return true;
+        const energyPct = Math.round(f.track.energy * 100);
+        return energyPct >= minEnergy && energyPct <= maxEnergy;
+      });
+    }
+
+    if (minValence > 0 || maxValence < 100) {
+      fits = fits.filter(f => {
+        if (f.track.valence === null || f.track.valence === undefined) return true;
+        const valencePct = Math.round(f.track.valence * 100);
+        return valencePct >= minValence && valencePct <= maxValence;
+      });
+    }
+
+    if (minDance > 0 || maxDance < 100) {
+      fits = fits.filter(f => {
+        if (f.track.danceability === null || f.track.danceability === undefined) return true;
+        const dancePct = Math.round(f.track.danceability * 100);
+        return dancePct >= minDance && dancePct <= maxDance;
+      });
+    }
+
+    if (minBpm > 50 || maxBpm < 220) {
+      fits = fits.filter(f => {
+        if (!f.track.bpm) return true;
+        return f.track.bpm >= minBpm && f.track.bpm <= maxBpm;
+      });
+    }
+
+    // 3. Sorting
     if (sortBy === 'vibe') {
       fits.sort((a, b) => b.similarity - a.similarity || b.score - a.score);
     } else {
       fits.sort((a, b) => b.score - a.score || b.similarity - a.similarity);
     }
+
     return fits.slice(0, maxSuggestions);
-  }, [analysis?.allFits, sortBy, maxSuggestions]);
+  }, [
+    analysis?.allFits, 
+    sortBy, 
+    maxSuggestions, 
+    dismissedFitTrackIds,
+    minEnergy,
+    maxEnergy,
+    minValence,
+    maxValence,
+    minDance,
+    maxDance,
+    minBpm,
+    maxBpm
+  ]);
+
+  // Hide / Dismiss fit suggestion for this session (never permanently cached)
+  const handleDismissFit = (track) => {
+    setDismissedFitTrackIds(prev => new Set(prev).add(track.id));
+  };
+
+  const handleUnhideAllFits = () => {
+    setDismissedFitTrackIds(new Set());
+  };
 
   // Toggle inline Spotify player on card
   const handleTogglePreview = (track) => {
@@ -760,7 +901,46 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
             </h3>
             
             {/* Sorting & Match Strictness Controls */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.9rem', fontSize: '0.75rem', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.75rem', color: 'var(--text-secondary)', flexWrap: 'wrap' }}>
+              {dismissedFitTrackIds.size > 0 && (
+                <button
+                  onClick={handleUnhideAllFits}
+                  style={{
+                    background: 'rgba(0, 212, 255, 0.1)',
+                    border: '1px solid rgba(0, 212, 255, 0.3)',
+                    color: '#00d4ff',
+                    padding: '2px 7px',
+                    borderRadius: '6px',
+                    fontSize: '0.72rem',
+                    cursor: 'pointer'
+                  }}
+                  title="Restore hidden suggestions for this session"
+                >
+                  Unhide ({dismissedFitTrackIds.size})
+                </button>
+              )}
+
+              {/* Filters Drawer Toggle Button */}
+              <button
+                onClick={() => setShowFilterDrawer(prev => !prev)}
+                style={{
+                  background: activeFilterCount > 0 ? 'rgba(0, 212, 255, 0.15)' : showFilterDrawer ? 'rgba(255, 255, 255, 0.12)' : 'rgba(255, 255, 255, 0.08)',
+                  border: `1px solid ${activeFilterCount > 0 ? '#00d4ff' : 'rgba(255, 255, 255, 0.15)'}`,
+                  color: activeFilterCount > 0 ? '#00d4ff' : '#fff',
+                  padding: '2px 8px',
+                  borderRadius: '6px',
+                  fontSize: '0.75rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.3rem',
+                  cursor: 'pointer'
+                }}
+                title="Open sliding acoustic filters"
+              >
+                <Filter size={12} />
+                <span>Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}</span>
+              </button>
+
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
                 <Sliders size={13} />
                 <span>Sort:</span>
@@ -792,12 +972,141 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
                   step="5" 
                   value={maxSuggestions} 
                   onChange={e => setMaxSuggestions(parseInt(e.target.value, 10))}
-                  style={{ width: '65px', accentColor: 'var(--accent-green)', cursor: 'pointer' }}
+                  style={{ width: '60px', accentColor: 'var(--accent-green)', cursor: 'pointer' }}
                   title="Adjust number of candidate suggestions"
                 />
               </div>
             </div>
           </div>
+
+          {/* Sliding Filters Panel Drawer */}
+          {showFilterDrawer && (
+            <div style={{
+              background: 'rgba(255, 255, 255, 0.04)',
+              border: '1px solid rgba(255, 255, 255, 0.12)',
+              borderRadius: '10px',
+              padding: '0.85rem 1rem',
+              marginBottom: '0.75rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.85rem',
+              fontSize: '0.75rem'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontWeight: 600, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                  <Filter size={13} color="#00d4ff" /> Acoustic Range Filters
+                </span>
+                {activeFilterCount > 0 && (
+                  <button
+                    onClick={handleResetFilters}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#00d4ff',
+                      fontSize: '0.72rem',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.25rem',
+                      padding: '2px 4px'
+                    }}
+                  >
+                    <RotateCcw size={11} /> Reset Filters
+                  </button>
+                )}
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '1rem' }}>
+                {/* Double-Ended Energy Filter */}
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.35rem', color: 'var(--text-secondary)' }}>
+                    <span>⚡ Energy</span>
+                    <span style={{ color: (minEnergy > 0 || maxEnergy < 100) ? '#ff9500' : '#fff', fontWeight: 600 }}>
+                      {minEnergy === 0 && maxEnergy === 100 ? '0% – 100% (All)' : `${minEnergy}% – ${maxEnergy}%`}
+                    </span>
+                  </div>
+                  <DualRangeSlider
+                    min={0}
+                    max={100}
+                    step={5}
+                    minValue={minEnergy}
+                    maxValue={maxEnergy}
+                    onChange={(min, max) => {
+                      setMinEnergy(min);
+                      setMaxEnergy(max);
+                    }}
+                    color="#ff9500"
+                  />
+                </div>
+
+                {/* Double-Ended Mood / Valence Filter */}
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.35rem', color: 'var(--text-secondary)' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>🌊 Mood / Valence</span>
+                    <span style={{ color: (minValence > 0 || maxValence < 100) ? '#00d4ff' : '#fff', fontWeight: 600 }}>
+                      {minValence === 0 && maxValence === 100 ? '0% – 100% (All)' : `${minValence}% – ${maxValence}%`}
+                    </span>
+                  </div>
+                  <DualRangeSlider
+                    min={0}
+                    max={100}
+                    step={5}
+                    minValue={minValence}
+                    maxValue={maxValence}
+                    onChange={(min, max) => {
+                      setMinValence(min);
+                      setMaxValence(max);
+                    }}
+                    color="#00d4ff"
+                  />
+                </div>
+
+                {/* Double-Ended Danceability Filter */}
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.35rem', color: 'var(--text-secondary)' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>💃 Danceability</span>
+                    <span style={{ color: (minDance > 0 || maxDance < 100) ? '#f43f5e' : '#fff', fontWeight: 600 }}>
+                      {minDance === 0 && maxDance === 100 ? '0% – 100% (All)' : `${minDance}% – ${maxDance}%`}
+                    </span>
+                  </div>
+                  <DualRangeSlider
+                    min={0}
+                    max={100}
+                    step={5}
+                    minValue={minDance}
+                    maxValue={maxDance}
+                    onChange={(min, max) => {
+                      setMinDance(min);
+                      setMaxDance(max);
+                    }}
+                    color="#f43f5e"
+                  />
+                </div>
+
+                {/* Double-Ended BPM / Tempo Filter */}
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.35rem', color: 'var(--text-secondary)' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>🎵 Tempo / BPM</span>
+                    <span style={{ color: (minBpm > 50 || maxBpm < 220) ? '#a78bfa' : '#fff', fontWeight: 600 }}>
+                      {minBpm === 50 && maxBpm === 220 ? '50 – 220 BPM (All)' : `${minBpm} – ${maxBpm} BPM`}
+                    </span>
+                  </div>
+                  <DualRangeSlider
+                    min={50}
+                    max={220}
+                    step={5}
+                    minValue={minBpm}
+                    maxValue={maxBpm}
+                    onChange={(min, max) => {
+                      setMinBpm(min);
+                      setMaxBpm(max);
+                    }}
+                    color="#a78bfa"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '560px', overflowY: 'auto', paddingRight: '0.5rem' }}>
             {displayedFits.map(f => {
@@ -844,7 +1153,7 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
                     </div>
 
                     {/* Actions */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexShrink: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexShrink: 0 }}>
                       <button 
                         onClick={() => handleTogglePreview(f.track)}
                         style={{ background: isPlaying ? '#00d4ff' : 'rgba(255,255,255,0.08)', border: 'none', color: isPlaying ? '#000' : '#fff', padding: '6px', borderRadius: '50%', cursor: 'pointer' }}
@@ -869,6 +1178,24 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
                           {actionInProgressId === f.track.id ? '...' : 'Add'}
                         </button>
                       )}
+
+                      <button 
+                        onClick={() => handleDismissFit(f.track)}
+                        style={{ 
+                          background: 'rgba(255,255,255,0.05)', 
+                          border: 'none', 
+                          color: 'var(--text-secondary)', 
+                          padding: '6px', 
+                          borderRadius: '50%', 
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center'
+                        }}
+                        title="Hide song from suggestions (this session only)"
+                      >
+                        <X size={13} />
+                      </button>
                     </div>
                   </div>
 

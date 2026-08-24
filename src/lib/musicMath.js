@@ -307,10 +307,11 @@ export function scoreCandidateAgainstSeedTracks(candidateTrack, seedTracks, topA
     badges.push({ type: 'artist', label: `👤 ${matchedArtist}`, color: '#1db954' });
   }
 
-  // Final Composite Score (0-100+)
-  let score = similarity * 0.6; // up to 60
+  // Final Composite Score (0-100)
+  // Weights: 70% Vibe Similarity, 20% Harmonic Key, 5% Artist Match, 5% Popularity
+  let score = similarity * 0.7; // up to 70
   if (harmonicMatch) score += 20;
-  if (hasArtistMatch) score += 15;
+  if (hasArtistMatch) score += 5;
   if (candidateTrack.popularity) score += (candidateTrack.popularity / 100) * 5;
 
   return {
