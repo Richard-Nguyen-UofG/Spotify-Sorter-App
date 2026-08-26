@@ -142,7 +142,7 @@ export default function LibraryManagerModal({ isOpen, onClose }) {
 
       const res = await fetchAcousticFeaturesForTracks(missing, (prog) => {
         setFetchProgress(prog.message);
-      });
+      }, true); // forceQuery = true to allow manual retry from library manager
 
       setImportStatus({
         success: true,

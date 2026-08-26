@@ -115,7 +115,7 @@ export async function fetchMusicaeBatch(spotifyIds, rapidApiKey, retries = 3) {
  * - Pass 2: Musicae.io API in parallel controlled batches (5 tracks per request).
  * - Automatically saves all newly resolved features to IndexedDB.
  */
-export async function fetchAcousticFeaturesForTracks(tracks, onProgress = () => {}) {
+export async function fetchAcousticFeaturesForTracks(tracks, onProgress = () => {}, forceQuery = false) {
   if (!tracks || tracks.length === 0) {
     return { tracksWithFeatures: [], stats: { total: 0, cached: 0, musicae: 0, missing: 0 } };
   }
@@ -155,7 +155,23 @@ export async function fetchAcousticFeaturesForTracks(tracks, onProgress = () => 
         energy: stored.energy,
         acousticness: stored.acousticness,
         valence: stored.valence,
-        acoustic_source: stored.source || 'indexeddb'
+        acoustic_source: stored.source || 'indexeddb',
+        status: 'resolved'
+      };
+    } else if (!forceQuery && stored && (stored.status === 'missing' || stored.bpm === null)) {
+      // Previously confirmed missing from Musicae catalog — avoid querying RapidAPI repeatedly
+      cachedCount++;
+      tracksWithFeatures[index] = {
+        ...track,
+        bpm: null,
+        key: null,
+        camelot: null,
+        danceability: null,
+        energy: null,
+        valence: null,
+        acousticness: null,
+        acoustic_source: 'cached_missing',
+        status: 'missing'
       };
     } else {
       // Needs to be queried from Musicae
@@ -186,8 +202,8 @@ export async function fetchAcousticFeaturesForTracks(tracks, onProgress = () => 
     onProgress({ stage: 'complete', message: `All ${tracks.length} tracks loaded instantly from Local Database!`, percent: 100 });
     return {
       tracksWithFeatures,
-      stats: { total: tracks.length, cached: cachedCount, musicae: 0, missing: 0 },
-      missingTracks: [],
+      stats: { total: tracks.length, cached: cachedCount, musicae: 0, missing: tracksWithFeatures.filter(t => !t?.bpm).length },
+      missingTracks: tracksWithFeatures.filter(t => !t?.bpm),
       rateLimitHit: false
     };
   }
@@ -241,6 +257,7 @@ export async function fetchAcousticFeaturesForTracks(tracks, onProgress = () => 
               const fullData = {
                 ...queryItem,
                 ...feature,
+                status: 'resolved',
                 source: 'musicae'
               };
 
@@ -250,12 +267,29 @@ export async function fetchAcousticFeaturesForTracks(tracks, onProgress = () => 
                 tracksWithFeatures[targetIdx] = {
                   ...tracks[targetIdx],
                   ...feature,
-                  acoustic_source: 'musicae'
+                  acoustic_source: 'musicae',
+                  status: 'resolved'
                 };
               });
             } else {
-              // Unresolved from Musicae
+              // Unresolved from Musicae: persist as 'missing' to avoid re-querying every run
               missingCount += matchedIndices.length;
+
+              const missingData = {
+                ...queryItem,
+                bpm: null,
+                key: null,
+                camelot: null,
+                danceability: null,
+                energy: null,
+                valence: null,
+                acousticness: null,
+                status: 'missing',
+                source: 'musicae'
+              };
+
+              newTracksToSave.push(missingData);
+
               matchedIndices.forEach(targetIdx => {
                 tracksWithFeatures[targetIdx] = {
                   ...tracks[targetIdx],
@@ -266,7 +300,8 @@ export async function fetchAcousticFeaturesForTracks(tracks, onProgress = () => 
                   energy: null,
                   valence: null,
                   acousticness: null,
-                  acoustic_source: null
+                  acoustic_source: 'musicae_missing',
+                  status: 'missing'
                 };
               });
             }
@@ -292,7 +327,7 @@ export async function fetchAcousticFeaturesForTracks(tracks, onProgress = () => 
       }
     }
 
-    // Persist all newly resolved tracks to IndexedDB in bulk
+    // Persist all newly checked tracks (resolved + confirmed missing) to IndexedDB in bulk
     if (newTracksToSave.length > 0) {
       await saveTracksBatch(newTracksToSave);
     }
