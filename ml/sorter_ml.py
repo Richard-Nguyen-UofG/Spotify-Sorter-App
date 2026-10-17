@@ -2,7 +2,7 @@
 
 Reads the app's SQLite database and:
   1. fills in features for songs that don't have them yet:
-     - audio: Deezer's 30 s preview (looked up by ISRC) -> CLAP music embedding on the GPU
+     - audio: Deezer's 30 s preview (looked up by ISRC) -> MERT music embedding on the GPU
      - lyrics: LRCLIB -> multilingual sentence embedding
   2. for each Liked Song, finds the songs in your library that sound most alike and scores each
      filing playlist (vibe, pool, exercise, idea) by how many of those sound-alikes it holds,
@@ -43,9 +43,15 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import requests
 
-AUDIO_MODEL = "laion/larger_clap_music"
+# MERT-v1-95M, one middle layer: in cross-validation it beat CLAP (laion/larger_clap_music) by
+# ~5 points overall and ~14 on songs by new artists; the 330M model and other layers did no better.
+AUDIO_MODEL = "m-a-p/MERT-v1-95M"
+AUDIO_REVISION = "12af15fef9d0ac838c3f475bfbbf26d2060dd4f5"  # pinned: the model ships its own code
+AUDIO_LAYER = 4
+# Stored with the embeddings; when it changes, every song's audio is re-analysed.
+AUDIO_VERSION = f"{AUDIO_MODEL}@{AUDIO_REVISION[:8]}#layer{AUDIO_LAYER}"
 TEXT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-AUDIO_DIM, TEXT_DIM = 512, 384
+AUDIO_DIM, TEXT_DIM = 768, 384
 LYRICS_WEIGHT = 1.0     # lyrics count as much as audio (best of 0–1.5 in cross-validation)
 NEIGHBOURS = 120        # sound-alikes per song (best of 25/60/120 in cross-validation)
 HISTORY_WEIGHT = 2.0    # keep in sync with HISTORY_WEIGHT in src-tauri/src/sorting.rs
@@ -64,13 +70,12 @@ MIN_MEMBERS = 5
 RECHECK_AFTER_DAYS = 90
 RECHECK_PER_RUN = 25
 
-SR = 48000
-CHUNK = 10 * SR  # CLAP looks at 10 s windows; a 30 s preview gives three.
+SR = 24000  # MERT's sample rate
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS ml_audio (
     track_id   TEXT PRIMARY KEY,
-    status     TEXT NOT NULL,          -- ok | no_preview | error
+    status     TEXT NOT NULL,          -- ok | no_preview | error | stale (older audio model)
     source     TEXT,                   -- isrc | search
     embedding  BLOB,
     updated_at TEXT NOT NULL
@@ -281,32 +286,34 @@ def fetch_audio(t):
 
 
 class AudioEmbedder:
+    """MERT layer AUDIO_LAYER, averaged over the whole preview."""
+
     def __init__(self):
         import torch
-        from transformers import ClapModel, ClapProcessor
+        from transformers import AutoModel, Wav2Vec2FeatureExtractor
 
         self.torch = torch
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model = ClapModel.from_pretrained(AUDIO_MODEL).to(self.device).eval()
-        self.extractor = ClapProcessor.from_pretrained(AUDIO_MODEL).feature_extractor
+        dtype = torch.float16 if self.device == "cuda" else torch.float32
+        self.model = AutoModel.from_pretrained(
+            AUDIO_MODEL, revision=AUDIO_REVISION, trust_remote_code=True).to(self.device, dtype).eval()
+        self.extractor = Wav2Vec2FeatureExtractor.from_pretrained(
+            AUDIO_MODEL, revision=AUDIO_REVISION, trust_remote_code=True)
+        self.dtype = dtype
+        # MERT's own code ignores output_hidden_states under current transformers; hook the layer.
+        self.captured = None
+        self.model.encoder.layers[AUDIO_LAYER].register_forward_hook(
+            lambda module, inputs, output: setattr(self, "captured", output[0] if isinstance(output, tuple) else output))
 
     def embed(self, audios):
         torch = self.torch
-        chunks, owner = [], []
-        for i, a in enumerate(audios):
-            pieces = [a[k * CHUNK:(k + 1) * CHUNK] for k in range(max(1, min(3, len(a) // CHUNK)))]
-            for p in pieces:
-                chunks.append(np.pad(p, (0, CHUNK - len(p))) if len(p) < CHUNK else p)
-                owner.append(i)
-        inputs = self.extractor(chunks, sampling_rate=SR, return_tensors="pt")
-        with torch.no_grad():
-            out = self.model.get_audio_features(**{k: v.to(self.device) for k, v in inputs.items()})
-        feats = out if isinstance(out, torch.Tensor) else out.pooler_output
-        feats = torch.nn.functional.normalize(feats.float(), dim=-1).cpu().numpy()
-        result = np.zeros((len(audios), feats.shape[1]), np.float32)
-        for row, i in zip(feats, owner):
-            result[i] += row
-        return result / np.linalg.norm(result, axis=1, keepdims=True)
+        out = np.zeros((len(audios), AUDIO_DIM), np.float32)
+        for i, audio in enumerate(audios):  # one at a time: previews differ slightly in length
+            x = self.extractor(audio, sampling_rate=SR, return_tensors="pt")["input_values"]
+            with torch.no_grad():
+                self.model(x.to(self.device, self.dtype))
+            out[i] = self.captured[0].float().mean(0).cpu().numpy()
+        return out
 
 
 def run_pool(items, fetch, consume, workers, stage, label, counts, host):
@@ -341,8 +348,13 @@ def run_pool(items, fetch, consume, workers, stage, label, counts, host):
 
 
 def fill_audio(db, ids):
+    stored = db.execute("SELECT value FROM ml_meta WHERE key = 'audio_model'").fetchone()
+    if not stored or json.loads(stored[0]) != AUDIO_VERSION:
+        # Embeddings from another model aren't comparable: re-analyse everything.
+        db.execute("UPDATE ml_audio SET status = 'stale' WHERE status = 'ok'")
+        set_meta(db, "audio_model", AUDIO_VERSION)
     have = {r[0]: r[1] for r in db.execute("SELECT track_id, status FROM ml_audio")}
-    pending = [tid for tid in ids if have.get(tid) in (None, "error")]
+    pending = [tid for tid in ids if have.get(tid) in (None, "error", "stale")]
     pending += stale_misses(db, "ml_audio", "no_preview", ids)
     if not pending:
         return

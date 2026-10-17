@@ -1,11 +1,10 @@
 //! Playlist → songs tools: grow a playlist, find the songs that fit it least, and find songs like
 //! a hand-picked few.
 //!
-//! Suggestions come in two labelled groups, because the signals differ a lot in strength. On the
+//! Suggestions come in two labelled groups, because the signals differ in strength. On the
 //! author's library, hiding 20% of a playlist and searching for it found 28% of the hidden songs
-//! in the top 40 by artist ("other songs by this artist are here") but only ~7% by sound alone
-//! (random: ~2%). So artist matches come first, and sound-alikes from other artists are offered
-//! as ideas.
+//! in the top 40 by artist ("other songs by this artist are here") and ~20% by sound (MERT audio
+//! + lyrics; random: ~2%). So artist matches come first, then sound-alikes from other artists.
 
 use std::collections::{HashMap, HashSet};
 
@@ -16,9 +15,9 @@ use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::model::Track;
 
-const AUDIO_DIM: usize = 512;
+/// Lyrics embedding size. The audio size comes from the data (it depends on the audio model
+/// configured in ml/sorter_ml.py, currently MERT with 768).
 const TEXT_DIM: usize = 384;
-const DIM: usize = AUDIO_DIM + TEXT_DIM;
 /// Must match LYRICS_WEIGHT in ml/sorter_ml.py.
 const LYRICS_WEIGHT: f32 = 1.0;
 /// A candidate's sound score is its mean similarity to its closest few seed songs, so a playlist
@@ -41,6 +40,8 @@ pub struct VectorIndex {
     ids: Vec<String>,
     pos: HashMap<String, usize>,
     data: Vec<f32>,
+    /// Length of each row in `data` (audio + lyrics).
+    dim: usize,
     /// Each song's mean similarity to its nearest neighbours. Subtracting it ("CSLS") stops
     /// songs that resemble everything from topping every list.
     hub: Vec<f32>,
@@ -85,10 +86,14 @@ impl VectorIndex {
         )?;
         let mut rows = stmt.query([])?;
         let mut raw: Vec<(String, Vec<f32>, Option<Vec<f32>>)> = Vec::new();
+        let mut audio_dim = 0;
         while let Some(row) = rows.next()? {
             let audio = floats(&row.get::<_, Vec<u8>>(1)?);
-            if audio.len() != AUDIO_DIM {
-                continue;
+            if audio_dim == 0 {
+                audio_dim = audio.len();
+            }
+            if audio.len() != audio_dim || audio_dim == 0 {
+                continue; // left over from another audio model; re-analysed on the next run
             }
             let lyrics = row
                 .get::<_, Option<Vec<u8>>>(2)?
@@ -97,12 +102,13 @@ impl VectorIndex {
             raw.push((row.get(0)?, audio, lyrics));
         }
 
-        // Centre each part on the library average before comparing: raw CLAP vectors share a
-        // large common component (two random songs average ~0.96 cosine). Mirrors
+        // Centre each part on the library average before comparing: raw embeddings share a large
+        // common component (two random songs averaged ~0.96 cosine with CLAP). Mirrors
         // Library.vectors in ml/sorter_ml.py.
-        let audio_mean = mean(raw.iter().map(|r| &r.1), AUDIO_DIM);
+        let dim = audio_dim + TEXT_DIM;
+        let audio_mean = mean(raw.iter().map(|r| &r.1), audio_dim);
         let lyrics_mean = mean(raw.iter().filter_map(|r| r.2.as_ref()), TEXT_DIM);
-        let (mut ids, mut data) = (Vec::with_capacity(raw.len()), Vec::with_capacity(raw.len() * DIM));
+        let (mut ids, mut data) = (Vec::with_capacity(raw.len()), Vec::with_capacity(raw.len() * dim));
         for (id, audio, lyrics) in raw {
             let mut v = centred_unit(&audio, &audio_mean, 1.0);
             match lyrics {
@@ -114,7 +120,7 @@ impl VectorIndex {
             ids.push(id);
         }
         let pos = ids.iter().enumerate().map(|(i, id)| (id.clone(), i)).collect();
-        let mut index = VectorIndex { ids, pos, data, hub: Vec::new() };
+        let mut index = VectorIndex { ids, pos, data, dim, hub: Vec::new() };
 
         // Hubness against a sample of the library: close enough, and keeps the build to ~2 s.
         let n = index.ids.len();
@@ -134,7 +140,7 @@ impl VectorIndex {
     }
 
     fn row(&self, i: usize) -> &[f32] {
-        &self.data[i * DIM..(i + 1) * DIM]
+        &self.data[i * self.dim..(i + 1) * self.dim]
     }
 
     fn sim(&self, a: usize, b: usize) -> f32 {

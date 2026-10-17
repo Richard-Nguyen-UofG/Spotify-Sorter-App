@@ -20,7 +20,7 @@ const MODES: { value: Mode; label: string; help: string }[] = [
 
 const GROUP_TITLES: Record<Match['group'], { title: string; note: string }> = {
   artist: { title: 'By artists already in it', note: 'the most reliable picks' },
-  sound: { title: 'Sounds like it', note: 'other artists, by audio and lyrics; hit-and-miss, treat as ideas' },
+  sound: { title: 'Sounds like it', note: 'other artists, by audio and lyrics; good ideas, worth a listen' },
   misfit: { title: 'Least like the rest', note: 'worst fit first; give them a listen before removing' },
 };
 
