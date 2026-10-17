@@ -137,9 +137,13 @@ SESSION = requests.Session()
 # LRCLIB requires the app name, version and a homepage link (or email) in the User-Agent.
 SESSION.headers["User-Agent"] = "SpotifySorter v0.1 (https://github.com/Richard-Nguyen-UofG/Spotify-Sorter-App)"
 DEEZER = RateLimiter(8)      # Deezer allows 50 requests / 5 s
-# LRCLIB gives identified clients ~90 requests/min and asks for one request at a time with a
-# short pause between; 1.25/s (75/min) on a single worker stays under that.
-LRCLIB = RateLimiter(1.25)
+# LRCLIB quotes ~90 requests/min for identified clients and asks for one request at a time with
+# a short pause between. In practice 75/min still drew a "wait" on most songs, so use 60/min.
+LRCLIB = RateLimiter(1.0)
+
+
+# How often a server answered 429/503 ("slow down"); shown in progress messages.
+SERVER_WAITS = defaultdict(int)
 
 
 def retry_after(response, attempt):
@@ -164,6 +168,8 @@ def get_json(url, params=None, limiter=None, tries=5):
         if r.status_code == 404:
             return None
         if r.status_code in (429, 500, 502, 503, 504):
+            if r.status_code in (429, 503):
+                SERVER_WAITS[url.split("/")[2]] += 1
             time.sleep(retry_after(r, attempt))
             continue
         r.raise_for_status()
@@ -303,8 +309,11 @@ class AudioEmbedder:
         return result / np.linalg.norm(result, axis=1, keepdims=True)
 
 
-def run_pool(items, fetch, consume, workers, stage, label):
-    """Fetches items on worker threads; consumes results on this thread (keeps SQLite/GPU here)."""
+def run_pool(items, fetch, consume, workers, stage, label, counts, host):
+    """Fetches items on worker threads; consumes results on this thread (keeps SQLite/GPU here).
+
+    `consume` tallies outcomes in `counts`; progress shows them plus how often `host` asked us to wait.
+    """
     work = queue.Queue()
     for item in items:
         work.put(item)
@@ -323,8 +332,11 @@ def run_pool(items, fetch, consume, workers, stage, label):
         th.start()
     for done in range(1, len(items) + 1):
         consume(results.get())
-        if done % 25 == 0 or done == len(items):
-            emit(stage, f"{label} ({done}/{len(items)})", done, len(items))
+        if done % 10 == 0 or done == len(items):
+            tally = ", ".join(f"{n} {status}" for status, n in sorted(counts.items()))
+            waits = SERVER_WAITS[host]
+            emit(stage, f"{label} ({done}/{len(items)}): {tally}" + (f", asked to wait {waits}×" if waits else ""),
+                 done, len(items), counts=dict(counts), waits=waits)
     consume(None)  # flush
 
 
@@ -338,6 +350,7 @@ def fill_audio(db, ids):
     emit("audio", f"Loading audio model for {len(tracks)} songs…", 0, len(tracks))
     embedder = AudioEmbedder()
     batch = []
+    counts = defaultdict(int)
 
     def flush():
         if not batch:
@@ -354,6 +367,7 @@ def fill_audio(db, ids):
             flush()
             return
         tid, audio, status, source = result
+        counts[status] += 1
         if audio is None:
             db.execute(
                 "INSERT OR REPLACE INTO ml_audio (track_id, status, source, embedding, updated_at) VALUES (?, ?, ?, NULL, ?)",
@@ -363,7 +377,8 @@ def fill_audio(db, ids):
             if len(batch) >= 16:
                 flush()
 
-    run_pool(tracks, fetch_audio, consume, workers=8, stage="audio", label="Analysing audio")
+    run_pool(tracks, fetch_audio, consume, workers=8, stage="audio", label="Analysing audio",
+             counts=counts, host="api.deezer.com")
     db.commit()
 
 
@@ -428,6 +443,7 @@ def fill_lyrics(db, ids):
     emit("lyrics", f"Loading lyrics model for {len(tracks)} songs…", 0, len(tracks))
     embedder = TextEmbedder()
     batch = []
+    counts = defaultdict(int)
 
     def flush():
         if not batch:
@@ -444,17 +460,20 @@ def fill_lyrics(db, ids):
             flush()
             return
         tid, status, text = result
+        counts[status] += 1
         if status == "ok":
             batch.append((tid, text))
-            if len(batch) >= 64:
+            if len(batch) >= 16:  # small batches: results are saved as they come in
                 flush()
         else:
             db.execute(
                 "INSERT OR REPLACE INTO ml_lyrics (track_id, status, embedding, updated_at) VALUES (?, ?, NULL, ?)",
                 (tid, status, now()))
+            db.commit()
 
     # One worker: LRCLIB asks clients to send requests sequentially.
-    run_pool(tracks, fetch_lyrics, consume, workers=1, stage="lyrics", label="Fetching lyrics")
+    run_pool(tracks, fetch_lyrics, consume, workers=1, stage="lyrics", label="Fetching lyrics",
+             counts=counts, host="lrclib.net")
     db.commit()
 
 
