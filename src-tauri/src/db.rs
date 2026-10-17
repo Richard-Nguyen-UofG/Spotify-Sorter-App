@@ -114,6 +114,32 @@ WHERE kind = 'unsorted' AND lower(name) LIKE '%-present gold';
 r#"
 UPDATE playlists SET kind = 'memory'
 WHERE kind = 'unsorted' AND (lower(name) LIKE '%memory%' OR lower(name) LIKE '%memories%');
+"#,
+// Audio/lyrics suggestions, written by ml/sorter_ml.py (which also creates these if missing).
+r#"
+CREATE TABLE IF NOT EXISTS ml_audio (
+    track_id   TEXT PRIMARY KEY,
+    status     TEXT NOT NULL,
+    source     TEXT,
+    embedding  BLOB,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ml_lyrics (
+    track_id   TEXT PRIMARY KEY,
+    status     TEXT NOT NULL,
+    embedding  BLOB,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ml_scores (
+    track_id TEXT NOT NULL,
+    target   TEXT NOT NULL,
+    score    REAL NOT NULL,
+    PRIMARY KEY (track_id, target)
+);
+CREATE TABLE IF NOT EXISTS ml_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 "#];
 
 pub fn open(path: &Path) -> AppResult<Connection> {

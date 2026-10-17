@@ -49,6 +49,8 @@ export interface TrackContext {
   semester: DatedTarget;
   gold: DatedTarget;
   suggestions: Suggestion[];
+  /** Whether sound-alike scores from the audio/lyrics analysis went into the suggestions. */
+  audioAnalysed: boolean;
 }
 
 export interface Status {
@@ -59,6 +61,9 @@ export interface Status {
   apiCallsToday: number;
   lastSync: string | null;
   canRevert: boolean;
+  mlAvailable: boolean;
+  mlRunning: boolean;
+  mlTrainedAt: string | null;
 }
 
 export interface SyncProgress { message: string; done: number; total: number }
@@ -72,6 +77,7 @@ export const api = {
   cancelLogin: () => invoke<void>('cancel_login'),
   logout: () => invoke<void>('logout'),
   sync: (force = false) => invoke<SyncSummary>('sync_library', { force }),
+  runMl: () => invoke<void>('run_ml'),
   playlists: () => invoke<Playlist[]>('get_playlists'),
   updatePlaylist: ({ id, kind, mood, pace, description }: Pick<Playlist, 'id' | 'kind' | 'mood' | 'pace' | 'description'>) =>
     invoke<void>('update_playlist', { id, kind, mood, pace, description }),
@@ -87,6 +93,10 @@ export const api = {
 
 export function onSyncProgress(cb: (p: SyncProgress) => void): Promise<UnlistenFn> {
   return listen<SyncProgress>('sync-progress', (e) => cb(e.payload));
+}
+
+export function onMlProgress(cb: (p: SyncProgress) => void): Promise<UnlistenFn> {
+  return listen<SyncProgress>('ml-progress', (e) => cb(e.payload));
 }
 
 /** Errors from Rust arrive as strings; login expiry is tagged so the UI can react. */

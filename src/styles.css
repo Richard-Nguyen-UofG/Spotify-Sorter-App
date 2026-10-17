@@ -84,7 +84,7 @@ kbd {
 .count { margin-left: 6px; font-size: 0.75rem; padding: 1px 7px; border-radius: 999px; background: var(--panel-2); color: var(--muted); }
 .count.warn { background: var(--warn); color: #000; }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
-
+.ml-status { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .progress { position: relative; padding: 6px 18px; background: var(--panel); border-bottom: 1px solid var(--border); font-size: 0.85rem; }
 .progress-bar { position: absolute; left: 0; top: 0; bottom: 0; background: var(--green-dim); transition: width 0.3s; }
 .progress span { position: relative; }

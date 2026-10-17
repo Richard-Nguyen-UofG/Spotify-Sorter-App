@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  api, errorText, isLoginError, onSyncProgress,
+  api, errorText, isLoginError, onMlProgress, onSyncProgress,
   type Playlist, type QueueItem, type Status, type SyncProgress,
 } from './api';
 import Login from './views/Login';
@@ -18,6 +18,9 @@ export default function App() {
   const [progress, setProgress] = useState<SyncProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [mlRunning, setMlRunning] = useState(false);
+  const [mlProgress, setMlProgress] = useState<SyncProgress | null>(null);
+  const [mlVersion, setMlVersion] = useState(0);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -38,6 +41,23 @@ export default function App() {
     if (isLoginError(e)) void refreshStatus();
   }, [refreshStatus]);
 
+  // Audio/lyrics analysis of new songs; runs after each sync when ml/ is set up.
+  const runMl = useCallback(async () => {
+    const s = await api.status().catch(() => null);
+    if (!s?.mlAvailable || s.mlRunning) return;
+    setMlRunning(true);
+    try {
+      await api.runMl();
+      setMlVersion((v) => v + 1);
+    } catch (e) {
+      reportError(e);
+    } finally {
+      setMlRunning(false);
+      setMlProgress(null);
+      void refreshStatus();
+    }
+  }, [refreshStatus, reportError]);
+
   const syncRunning = useRef(false);
   const sync = useCallback(async (force = false) => {
     if (syncRunning.current) return;
@@ -51,6 +71,7 @@ export default function App() {
         `Synced: ${s.playlistsDownloaded} playlist${s.playlistsDownloaded === 1 ? '' : 's'} downloaded, ` +
         `${s.liked} liked songs, ${s.apiCalls} API calls.`,
       );
+      void runMl();
     } catch (e) {
       reportError(e);
       await loadData().catch(() => {});
@@ -60,12 +81,16 @@ export default function App() {
       setProgress(null);
       void refreshStatus();
     }
-  }, [loadData, refreshStatus, reportError]);
+  }, [loadData, refreshStatus, reportError, runMl]);
 
   useEffect(() => {
     void refreshStatus();
-    const unlisten = onSyncProgress(setProgress);
-    return () => { void unlisten.then((f) => f()); };
+    const unlistenSync = onSyncProgress(setProgress);
+    const unlistenMl = onMlProgress(setMlProgress);
+    return () => {
+      void unlistenSync.then((f) => f());
+      void unlistenMl.then((f) => f());
+    };
   }, [refreshStatus]);
 
   const ready = !!status?.loggedIn && !!status.hasClientId;
@@ -104,6 +129,20 @@ export default function App() {
           </button>
         </nav>
         <div className="topbar-right">
+          {status.mlAvailable && (
+            mlRunning ? (
+              <span className="muted small ml-status" title="Analysing audio and lyrics of new songs">
+                {mlProgress?.message ?? 'Analysing audio…'}
+              </span>
+            ) : (
+              <button className="ghost small" onClick={() => void runMl()}
+                title={status.mlTrainedAt
+                  ? `Audio model last trained ${new Date(status.mlTrainedAt).toLocaleString()}. Click to analyse new songs and retrain.`
+                  : 'Analyse your songs’ audio and lyrics to improve suggestions'}>
+                Analyse audio
+              </button>
+            )
+          )}
           <span className="muted small" title="Spotify Web API requests made by this app today">
             {status.apiCallsToday} API calls today
           </span>
@@ -150,6 +189,7 @@ export default function App() {
             playlists={playlists}
             queue={queue}
             canRevert={status.canRevert}
+            refreshKey={mlVersion}
             onChanged={async () => { await loadData(); await refreshStatus(); }}
             onError={reportError}
             onNotice={setNotice}

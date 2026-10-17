@@ -102,6 +102,7 @@ pub fn track_context(conn: &Connection, track_id: &str) -> AppResult<TrackContex
         rows
     };
 
+    let (suggestions, audio_analysed) = blended_suggestions(conn, track_id)?;
     Ok(TrackContext {
         already_in,
         semester: DatedTarget {
@@ -112,8 +113,67 @@ pub fn track_context(conn: &Connection, track_id: &str) -> AppResult<TrackContex
             playlist_id: find_playlist(conn, "gold", &gold_name)?,
             name: gold_name,
         },
-        suggestions: artist_history(conn, track_id)?,
+        suggestions,
+        audio_analysed,
     })
+}
+
+/// Weight of artist history relative to sound-alikes once both are scaled to their best playlist.
+/// Chosen by cross-validation in ml/sorter_ml.py (keep the two in sync).
+const HISTORY_WEIGHT: f64 = 2.0;
+
+/// Artist history blended with sound-alike scores from ml/sorter_ml.py (when it has scored the
+/// song). Each source is scaled so its best playlist is 1, then history is weighted up: it's the
+/// stronger signal for known artists, while sound-alikes cover artists with no history.
+fn blended_suggestions(conn: &Connection, track_id: &str) -> AppResult<(Vec<Suggestion>, bool)> {
+    let sound_alikes: Vec<(String, f64)> = {
+        let mut stmt = conn.prepare(
+            "SELECT s.target, s.score FROM ml_scores s
+             JOIN playlists p ON p.id = s.target AND p.present = 1
+             WHERE s.track_id = ?1",
+        )?;
+        let rows = stmt
+            .query_map([track_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        rows
+    };
+    let history = artist_history(conn, track_id)?;
+    if sound_alikes.is_empty() {
+        return Ok((history, false));
+    }
+
+    let best = |scores: &mut dyn Iterator<Item = f64>| scores.fold(0.0_f64, f64::max).max(1e-9);
+    let best_sound = best(&mut sound_alikes.iter().map(|(_, s)| *s));
+    let best_history = best(&mut history.iter().map(|s| s.score));
+
+    let mut merged: HashMap<String, (f64, Vec<String>)> = HashMap::new();
+    for (playlist_id, share) in &sound_alikes {
+        merged.insert(
+            playlist_id.clone(),
+            (
+                share / best_sound,
+                vec![format!("{:.0}% of sound-alikes are here", share * 100.0)],
+            ),
+        );
+    }
+    for s in history {
+        let entry = merged.entry(s.playlist_id).or_default();
+        entry.0 += HISTORY_WEIGHT * s.score / best_history;
+        // Artist reasons first: they're the more concrete explanation.
+        let mut reasons = s.reasons;
+        reasons.append(&mut entry.1);
+        entry.1 = reasons;
+    }
+    let mut suggestions: Vec<Suggestion> = merged
+        .into_iter()
+        .map(|(playlist_id, (score, reasons))| Suggestion {
+            playlist_id,
+            score: (score * 100.0).round() / 100.0,
+            reasons,
+        })
+        .collect();
+    suggestions.sort_by(|a, b| b.score.total_cmp(&a.score));
+    Ok((suggestions, true))
 }
 
 /// "Where did this artist's other songs go?" Each artist's share of songs in a playlist

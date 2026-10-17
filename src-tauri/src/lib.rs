@@ -1,10 +1,12 @@
 mod db;
 mod error;
+mod ml;
 mod model;
 mod sorting;
 mod spotify;
 mod sync;
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::params;
@@ -18,6 +20,7 @@ use spotify::Spotify;
 
 pub struct AppState {
     db: Db,
+    db_path: PathBuf,
     spotify: Spotify,
 }
 
@@ -28,8 +31,16 @@ const KINDS: &[&str] = &[
 #[tauri::command]
 async fn status(state: State<'_, AppState>) -> AppResult<Status> {
     let logged_in = state.spotify.has_login().await;
+    let ml_available = ml::available(&state.db);
     let conn = db::lock(&state.db);
+    let ml_trained_at: Option<String> = conn
+        .query_row("SELECT value FROM ml_meta WHERE key = 'trained_at'", [], |r| r.get(0))
+        .ok()
+        .and_then(|v: String| serde_json::from_str(&v).ok());
     Ok(Status {
+        ml_available,
+        ml_running: ml::is_running(),
+        ml_trained_at,
         has_client_id: !state.spotify.client_id().is_empty(),
         logged_in,
         display_name: db::get_setting(&conn, "display_name")?,
@@ -91,6 +102,12 @@ async fn logout(state: State<'_, AppState>) -> AppResult<()> {
 #[tauri::command]
 async fn sync_library(app: AppHandle, state: State<'_, AppState>, force: bool) -> AppResult<SyncSummary> {
     sync::sync_library(&app, &state.db, &state.spotify, force).await
+}
+
+/// Analyses new songs' audio and lyrics, retrains, and rescores Liked Songs.
+#[tauri::command]
+async fn run_ml(app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
+    ml::run_update(&app, &state.db, &state.db_path).await
 }
 
 #[tauri::command]
@@ -187,7 +204,8 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            let conn = db::open(&dir.join("sorter.db"))?;
+            let db_path = dir.join("sorter.db");
+            let conn = db::open(&db_path)?;
             let client_id = db::get_setting(&conn, "client_id")?
                 .or_else(|| option_env!("SPOTIFY_CLIENT_ID").map(str::to_owned))
                 .unwrap_or_default();
@@ -195,6 +213,7 @@ pub fn run() {
             app.manage(AppState {
                 spotify: Spotify::new(client_id, db.clone()),
                 db,
+                db_path,
             });
             Ok(())
         })
@@ -205,6 +224,7 @@ pub fn run() {
             cancel_login,
             logout,
             sync_library,
+            run_ml,
             get_playlists,
             update_playlist,
             get_queue,

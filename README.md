@@ -44,6 +44,36 @@ Spotify's API doesn't expose folders, so the **Playlists** tab maps each playlis
 Data lives in `%APPDATA%\com.richardnguyen.spotifysorter\sorter.db`; the Spotify login is stored in
 Windows Credential Manager.
 
+## Audio and lyrics suggestions (optional)
+
+`ml/sorter_ml.py` suggests playlists from what a song sounds like:
+
+- **Audio:** each song's 30 s Deezer preview (looked up by ISRC) is embedded with the
+  [CLAP music model](https://huggingface.co/laion/larger_clap_music) on the GPU. Previews are
+  decoded in memory and discarded; only the embedding is stored.
+- **Lyrics:** fetched from [LRCLIB](https://lrclib.net) (rate-limited to 2 requests/s) and
+  embedded with a multilingual sentence model.
+- **Sound-alikes:** for each Liked Song, the 120 most similar songs in your library vote for the
+  playlists they're in. The app blends that with artist history (history weighted 2×).
+
+Cross-validated on the author's library (vibe playlist in the top 3): artist history alone 47%,
+sound-alikes + history 63%; for artists with no history, 0% → 43%. A trained linear model and
+mood/pace prediction were tried and did no better than these baselines, so they were dropped.
+
+The app runs it after each sync (only new songs need downloading) and from **Analyse audio** in the
+top bar. Local files are never synced, so they're never analysed.
+
+Setup (Windows, NVIDIA GPU; CPU works but is slower):
+
+```
+py -3.10 -m venv ml/.venv
+ml/.venv/Scripts/python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+ml/.venv/Scripts/python -m pip install -r ml/requirements.txt
+```
+
+`ml/.venv/Scripts/python ml/sorter_ml.py eval` prints a cross-validated report comparing the model
+with artist-history suggestions.
+
 ## Spotify API notes
 
 The client targets the February 2026 Development Mode API (`/playlists/{id}/items`, `/me/library`,

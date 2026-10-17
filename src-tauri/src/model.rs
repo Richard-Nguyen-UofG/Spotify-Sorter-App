@@ -131,6 +131,8 @@ pub struct TrackContext {
     pub semester: DatedTarget,
     pub gold: DatedTarget,
     pub suggestions: Vec<Suggestion>,
+    /// Whether sound-alike scores (ml/sorter_ml.py) went into the suggestions.
+    pub audio_analysed: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -168,4 +170,7 @@ pub struct Status {
     pub api_calls_today: i64,
     pub last_sync: Option<String>,
     pub can_revert: bool,
+    pub ml_available: bool,
+    pub ml_running: bool,
+    pub ml_trained_at: Option<String>,
 }

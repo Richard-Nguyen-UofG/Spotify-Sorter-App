@@ -32,3 +32,7 @@ spotify_sorter_acoustic_library*.json
 # Tauri / Rust build output
 src-tauri/target
 src-tauri/gen/schemas
+
+# Python audio/lyrics pipeline
+ml/.venv
+__pycache__/

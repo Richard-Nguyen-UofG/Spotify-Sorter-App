@@ -75,7 +75,7 @@ export const cellKey = (mood: Mood, pace: Pace) => `${mood}-${pace}`;
 
 export interface CellScore { mood: Mood; pace: Pace; score: number }
 
-/** Sums suggestion scores of the vibe playlists in each mood × pace cell. */
+/** Sums suggestion scores (artist history blended with sound-alikes) of the vibe playlists in each cell. */
 export function cellScores(byId: Map<string, Playlist>, ctx: TrackContext): CellScore[] {
   const scores = new Map<string, number>();
   for (const s of ctx.suggestions) {

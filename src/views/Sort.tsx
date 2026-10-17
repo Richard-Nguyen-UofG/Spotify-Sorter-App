@@ -8,6 +8,8 @@ interface Props {
   playlists: Playlist[];
   queue: QueueItem[];
   canRevert: boolean;
+  /** Bumped when the audio model rescored songs, so suggestions reload. */
+  refreshKey: number;
   onChanged: () => Promise<void>;
   onError: (e: unknown) => void;
   onNotice: (text: string) => void;
@@ -25,7 +27,7 @@ function isTyping(target: EventTarget | null) {
   return target instanceof HTMLElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
 }
 
-export default function Sort({ playlists, queue, canRevert, onChanged, onError, onNotice }: Props) {
+export default function Sort({ playlists, queue, canRevert, refreshKey, onChanged, onError, onNotice }: Props) {
   const byId = useMemo(() => new Map(playlists.map((p) => [p.id, p])), [playlists]);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const current = queue.find((q) => q.track.id === currentId) ?? queue.find((q) => !q.staged) ?? queue[0] ?? null;
@@ -55,8 +57,8 @@ export default function Sort({ playlists, queue, canRevert, onChanged, onError, 
       setFocus(best.score > 0 ? { mood: best.mood, pace: best.pace } : null);
     }).catch(onError);
     return () => { cancelled = true; };
-    // Only reload when the song (or the playlist set) changes, not on every queue refresh.
-  }, [currentTrackId, byId]);
+    // Only reload when the song, the playlist set or the audio scores change, not on every queue refresh.
+  }, [currentTrackId, byId, refreshKey]);
 
   const final = useMemo(() => (ctx ? finalIds(sel, byId, ctx) : new Set<string>()), [sel, byId, ctx]);
   const auto = useMemo(() => (ctx ? autoIds(sel.picked, byId, ctx) : new Set<string>()), [sel, byId, ctx]);
@@ -230,6 +232,11 @@ export default function Sort({ playlists, queue, canRevert, onChanged, onError, 
                     <span className="muted"> · first filed in {previousSemesters.map((p) => p.name).join(', ')}</span>
                   )}
                 </div>
+                {!ctx.audioAnalysed && (
+                  <div className="small muted">
+                    Suggestions use artist history only. No audio analysis for this song yet.
+                  </div>
+                )}
               </div>
               <div className="song-actions">
                 <button className="ghost small" onClick={() => api.openInSpotify(track.uri).catch(onError)}>Open in Spotify</button>
