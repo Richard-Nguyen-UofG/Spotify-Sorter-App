@@ -28,3 +28,7 @@ dist-ssr
 # Acoustic database exports / local JSON backups
 spotify_sorter_acoustic_library*.json
 *.backup.json
+
+# Tauri / Rust build output
+src-tauri/target
+src-tauri/gen/schemas
