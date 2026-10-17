@@ -37,7 +37,7 @@ import sys
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import requests
@@ -57,6 +57,11 @@ KEPT_KINDS = KEEPER_KINDS + ("skimmed", "gold", "gold_all")
 # Every song the user has heard gets features, so the app can optionally search Internal-only ones.
 HEARD_KINDS = KEPT_KINDS + ("internal", "semester")
 MIN_MEMBERS = 5
+
+# Songs Deezer/LRCLIB didn't have get looked up again after a while, a few per run, since
+# catalogues grow (new releases often get lyrics weeks later).
+RECHECK_AFTER_DAYS = 90
+RECHECK_PER_RUN = 25
 
 SR = 48000
 CHUNK = 10 * SR  # CLAP looks at 10 s windows; a 30 s preview gives three.
@@ -167,6 +172,19 @@ def load_tracks(db, ids):
         if row:
             out[tid] = dict(zip(("id", "name", "isrc", "duration_ms", "album", "artist"), row))
     return out
+
+
+def stale_misses(db, table, status, ids):
+    """Up to RECHECK_PER_RUN songs (of `ids`) marked `status` longest ago, if over RECHECK_AFTER_DAYS.
+
+    A re-check that misses again rewrites updated_at, so the backlog rotates through over time.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=RECHECK_AFTER_DAYS)).isoformat()
+    wanted = set(ids)
+    rows = db.execute(
+        f"SELECT track_id FROM {table} WHERE status = ? AND updated_at < ? ORDER BY updated_at",
+        (status, cutoff))
+    return [tid for (tid,) in rows if tid in wanted][:RECHECK_PER_RUN]
 
 
 def tracks_needing_features(db):
@@ -300,6 +318,7 @@ def run_pool(items, fetch, consume, workers, stage, label):
 def fill_audio(db, ids):
     have = {r[0]: r[1] for r in db.execute("SELECT track_id, status FROM ml_audio")}
     pending = [tid for tid in ids if have.get(tid) in (None, "error")]
+    pending += stale_misses(db, "ml_audio", "no_preview", ids)
     if not pending:
         return
     tracks = list(load_tracks(db, pending).values())
@@ -390,6 +409,7 @@ class TextEmbedder:
 def fill_lyrics(db, ids):
     have = {r[0]: r[1] for r in db.execute("SELECT track_id, status FROM ml_lyrics")}
     pending = [tid for tid in ids if have.get(tid) in (None, "error")]
+    pending += stale_misses(db, "ml_lyrics", "missing", ids)
     if not pending:
         return
     tracks = list(load_tracks(db, pending).values())
