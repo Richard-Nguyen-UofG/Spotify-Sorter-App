@@ -9,9 +9,12 @@ import {
 import { fetchAcousticFeaturesForTracks } from '../lib/audioFeatureEngine';
 import { calculateHarmonicSequence } from '../lib/musicMath';
 import Analyzer from './Analyzer';
-import { Target, CheckSquare, Square, Play, Database, Sparkles, RefreshCw } from 'lucide-react';
+import SongMatcher from './SongMatcher';
+import DeepCutsDiscovery from './DeepCutsDiscovery';
+import { Target, CheckSquare, Square, Play, Database, Sparkles, RefreshCw, Compass } from 'lucide-react';
 
 export default function Dashboard({ onOpenLibrary }) {
+  const [activeTab, setActiveTab] = useState('sorter'); // 'sorter' | 'matcher'
   const [playlists, setPlaylists] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -170,16 +173,71 @@ export default function Dashboard({ onOpenLibrary }) {
 
   return (
     <div className="animate-fade-in">
-      {/* Top Banner */}
-      <div className="glass-panel" style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.5rem' }}>
-        <div>
-          <h2 style={{ fontSize: '1.6rem', marginBottom: '0.5rem' }}>Setup Playlist Analysis</h2>
-          <p style={{ color: 'var(--text-secondary)', margin: 0, fontSize: '0.95rem' }}>
-            1. Select one <strong>Target Playlist</strong> to clean up outliers.<br/>
-            2. (Optional) Select one or more <strong>Master Pools</strong> to pull harmonic vibe suggestions from.
-          </p>
+      {/* Top Mode Navigation: Playlist Sorter vs Song Matcher */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+        <div style={{ display: 'flex', gap: '0.4rem', background: 'rgba(255, 255, 255, 0.04)', padding: '5px', borderRadius: '12px', border: '1px solid var(--glass-border)' }}>
+          <button
+            onClick={() => setActiveTab('sorter')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              padding: '0.55rem 1.1rem',
+              borderRadius: '9px',
+              border: 'none',
+              background: activeTab === 'sorter' ? '#1DB954' : 'transparent',
+              color: activeTab === 'sorter' ? '#000' : 'var(--text-secondary)',
+              fontWeight: 700,
+              fontSize: '0.9rem',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <Target size={16} /> Curate Playlists
+          </button>
+
+          <button
+            onClick={() => setActiveTab('matcher')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              padding: '0.55rem 1.1rem',
+              borderRadius: '9px',
+              border: 'none',
+              background: activeTab === 'matcher' ? '#00d4ff' : 'transparent',
+              color: activeTab === 'matcher' ? '#000' : 'var(--text-secondary)',
+              fontWeight: 700,
+              fontSize: '0.9rem',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <Sparkles size={16} /> Sort New Songs
+          </button>
+
+          <button
+            onClick={() => setActiveTab('discovery')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              padding: '0.55rem 1.1rem',
+              borderRadius: '9px',
+              border: 'none',
+              background: activeTab === 'discovery' ? 'linear-gradient(135deg, #8A2BE2, #6c2bd9)' : 'transparent',
+              color: activeTab === 'discovery' ? '#fff' : 'var(--text-secondary)',
+              fontWeight: 700,
+              fontSize: '0.9rem',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease'
+            }}
+          >
+            <Compass size={16} /> Deep Cuts
+          </button>
         </div>
 
+        {/* Global actions: Acoustic Library & Refresh */}
         <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
           {onOpenLibrary && (
             <button 
@@ -192,21 +250,52 @@ export default function Dashboard({ onOpenLibrary }) {
             </button>
           )}
 
-          <button 
-            className="btn-primary" 
-            onClick={() => setAnalyzing(true)}
-            disabled={!targetPlaylist}
-            style={{ 
-              opacity: targetPlaylist ? 1 : 0.5, 
-              cursor: targetPlaylist ? 'pointer' : 'not-allowed',
-              padding: '0.75rem 1.6rem'
-            }}
+          <button
+            className="btn-secondary"
+            onClick={() => loadPlaylists(true)}
+            disabled={refreshingPlaylists}
+            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+            title="Refresh playlists from Spotify"
           >
-            <Play size={18} />
-            Start Analysis
+            <RefreshCw size={15} className={refreshingPlaylists ? 'animate-spin' : ''} />
+            Refresh
           </button>
         </div>
       </div>
+
+      {/* Render Active Tab View */}
+      {activeTab === 'matcher' ? (
+        <SongMatcher playlists={playlists} masterPools={masterPools} />
+      ) : activeTab === 'discovery' ? (
+        <DeepCutsDiscovery playlists={playlists} masterPools={masterPools} />
+      ) : (
+        <>
+          {/* Top Banner */}
+          <div className="glass-panel" style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.5rem' }}>
+            <div>
+              <h2 style={{ fontSize: '1.6rem', marginBottom: '0.5rem' }}>Setup Playlist Analysis</h2>
+              <p style={{ color: 'var(--text-secondary)', margin: 0, fontSize: '0.95rem' }}>
+                1. Select one <strong>Target Playlist</strong> to clean up outliers.<br/>
+                2. (Optional) Select one or more <strong>Master Pools</strong> to pull harmonic vibe suggestions from.
+              </p>
+            </div>
+
+            <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+              <button 
+                className="btn-primary" 
+                onClick={() => setAnalyzing(true)}
+                disabled={!targetPlaylist}
+                style={{ 
+                  opacity: targetPlaylist ? 1 : 0.5, 
+                  cursor: targetPlaylist ? 'pointer' : 'not-allowed',
+                  padding: '0.75rem 1.6rem'
+                }}
+              >
+                <Play size={18} />
+                Start Analysis
+              </button>
+            </div>
+          </div>
 
       {/* Harmonic Flow Alert Notification */}
       {flowNotification && (
@@ -327,6 +416,8 @@ export default function Dashboard({ onOpenLibrary }) {
           </div>
         ))}
       </div>
+        </>
+      )}
     </div>
   );
 }

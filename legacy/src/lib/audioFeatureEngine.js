@@ -137,8 +137,12 @@ export async function fetchAcousticFeaturesForTracks(tracks, onProgress = () => 
   onProgress({ stage: 'cache', message: 'Checking Local IndexedDB Database...', percent: 10 });
 
   tracks.forEach((track, index) => {
-    const artist = track.artists && track.artists[0] ? track.artists[0].name : (track.artist || '');
-    const title = track.name || track.title || '';
+    const rawArtist = track.artists && track.artists[0] 
+      ? (typeof track.artists[0] === 'string' ? track.artists[0] : (track.artists[0].name || ''))
+      : (typeof track.artist === 'string' ? track.artist : (track.artist?.name || ''));
+    const artist = String(rawArtist || '');
+    const rawTitle = typeof track.name === 'string' ? track.name : (typeof track.title === 'string' ? track.title : (track.name?.name || ''));
+    const title = String(rawTitle || '');
     const isrc = track.external_ids?.isrc || track.isrc || null;
     const id = track.id || null;
 

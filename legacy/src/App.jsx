@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { redirectToAuthCodeFlow, getAccessToken, setToken, getToken, isTokenExpired, refreshAccessToken, removeToken } from './lib/spotify';
 import { getAllTracks, onDatabaseChange, initDatabase } from './lib/acousticDatabase';
 import LibraryManagerModal from './components/LibraryManagerModal';
+import ErrorBoundary from './components/ErrorBoundary';
 import { Disc3, LogIn, LogOut, Database } from 'lucide-react';
 import './index.css';
 
@@ -145,7 +146,9 @@ function App() {
       </header>
       
       <main>
-        <Dashboard onOpenLibrary={() => setShowLibraryModal(true)} />
+        <ErrorBoundary>
+          <Dashboard onOpenLibrary={() => setShowLibraryModal(true)} />
+        </ErrorBoundary>
       </main>
 
       <footer style={{ textAlign: 'center', padding: '2rem 0', opacity: 0.7, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>

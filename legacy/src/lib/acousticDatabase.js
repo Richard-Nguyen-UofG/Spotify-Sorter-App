@@ -1,9 +1,10 @@
 import { normalizeKey, toCamelotKey } from './musicMath.js';
 
 const DB_NAME = 'SpotifySorterDB';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_NAME = 'tracks';
 const PLAYLIST_STORE_NAME = 'playlist_cache';
+const PROFILE_STORE_NAME = 'playlist_profiles';
 const LEGACY_STORAGE_KEY = 'spotify_sorter_acoustic_library_v2';
 
 // Fast In-Memory Map loaded from IndexedDB
@@ -33,8 +34,11 @@ function notifyListeners() {
  */
 export function getTrackLookupKey(artist, title) {
   if (!artist && !title) return null;
-  const a = (artist || '').toLowerCase().replace(/[^a-z0-9]/g, '').trim();
-  const t = (title || '').toLowerCase().replace(/[^a-z0-9]/g, '').trim();
+  const artistStr = typeof artist === 'string' ? artist : (artist?.name || '');
+  const titleStr = typeof title === 'string' ? title : (title?.name || title?.title || '');
+  const a = String(artistStr || '').toLowerCase().replace(/[^a-z0-9]/g, '').trim();
+  const t = String(titleStr || '').toLowerCase().replace(/[^a-z0-9]/g, '').trim();
+  if (!a && !t) return null;
   return `${a}_${t}`;
 }
 
@@ -79,6 +83,9 @@ function openIndexedDB() {
       }
       if (!db.objectStoreNames.contains(PLAYLIST_STORE_NAME)) {
         db.createObjectStore(PLAYLIST_STORE_NAME, { keyPath: 'playlist_id' });
+      }
+      if (!db.objectStoreNames.contains(PROFILE_STORE_NAME)) {
+        db.createObjectStore(PROFILE_STORE_NAME, { keyPath: 'playlist_id' });
       }
     };
 
@@ -163,6 +170,81 @@ export async function invalidatePlaylistTracksCache(playlistId) {
     try {
       const tx = db.transaction(PLAYLIST_STORE_NAME, 'readwrite');
       const store = tx.objectStore(PLAYLIST_STORE_NAME);
+      store.delete(playlistId);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
+
+/**
+ * Gets cached playlist vibe profile from IndexedDB.
+ * If expectedSnapshotId is provided, returns null if Spotify has an updated version.
+ */
+export async function getCachedPlaylistProfile(playlistId, expectedSnapshotId = null) {
+  if (!playlistId) return null;
+  const db = await openIndexedDB();
+  if (!db || !db.objectStoreNames.contains(PROFILE_STORE_NAME)) return null;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(PROFILE_STORE_NAME, 'readonly');
+      const store = tx.objectStore(PROFILE_STORE_NAME);
+      const req = store.get(playlistId);
+      req.onsuccess = () => {
+        const record = req.result;
+        if (!record) {
+          resolve(null);
+          return;
+        }
+        if (expectedSnapshotId && record.snapshot_id && record.snapshot_id !== expectedSnapshotId) {
+          resolve(null);
+          return;
+        }
+        resolve(record);
+      };
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+/**
+ * Saves playlist vibe profile to IndexedDB.
+ */
+export async function saveCachedPlaylistProfile(profile) {
+  if (!profile || !profile.playlist_id) return;
+  const db = await openIndexedDB();
+  if (!db || !db.objectStoreNames.contains(PROFILE_STORE_NAME)) return;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(PROFILE_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(PROFILE_STORE_NAME);
+      store.put({
+        ...profile,
+        cached_at: Date.now()
+      });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
+
+/**
+ * Invalidates cached playlist profile from IndexedDB.
+ */
+export async function invalidatePlaylistProfile(playlistId) {
+  if (!playlistId) return;
+  const db = await openIndexedDB();
+  if (!db || !db.objectStoreNames.contains(PROFILE_STORE_NAME)) return;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(PROFILE_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(PROFILE_STORE_NAME);
       store.delete(playlistId);
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();

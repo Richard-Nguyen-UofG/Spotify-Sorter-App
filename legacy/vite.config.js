@@ -5,6 +5,8 @@ import basicSsl from '@vitejs/plugin-basic-ssl'
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react(), basicSsl()],
+  // .env.local lives at the repo root, shared with the desktop app
+  envDir: '..',
   server: {
     host: '127.0.0.1',
     port: 8888,

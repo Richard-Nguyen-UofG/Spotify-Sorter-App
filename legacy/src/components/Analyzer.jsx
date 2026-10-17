@@ -40,7 +40,8 @@ import {
  */
 export function normalizeSongTitle(title) {
   if (!title) return '';
-  return title
+  const titleStr = typeof title === 'string' ? title : (title?.name || title?.title || '');
+  return String(titleStr || '')
     .toLowerCase()
     .replace(/\s*[\(\[](feat\.|ft\.|with|featuring).*?[\)\]]/gi, '')
     .replace(/\s*[-–—/]\s*(remastered|remaster|single version|album version|radio edit|original mix|deluxe edition|bonus track|anniversary edition|version orchestrale|orchestral|version|mix|edit|mono|stereo|live|acoustic).*$/i, '')
@@ -54,11 +55,14 @@ export function normalizeArtistName(track) {
   if (!track) return '';
   let artist = '';
   if (track.artists && Array.isArray(track.artists) && track.artists.length > 0) {
-    artist = track.artists[0]?.name || track.artists[0] || '';
+    const first = track.artists[0];
+    artist = typeof first === 'string' ? first : (first?.name || '');
   } else if (typeof track.artist === 'string') {
     artist = track.artist.split(',')[0].split('feat')[0].split('ft.')[0];
+  } else if (track.artist && typeof track.artist === 'object') {
+    artist = track.artist.name || '';
   }
-  return artist.toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
+  return String(artist || '').toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
 }
 
 export function getNormalizedSongKey(track) {
@@ -161,9 +165,8 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
       setLoading(true);
       setError(null);
       setProgressPercent(5);
-      setStatus("Fetching target playlist tracks from Spotify...");
-      
-      const targetTracksRaw = await getPlaylistTracks(targetPlaylist.id);
+      setStatus(`Checking "${targetPlaylist.name}" for updates...`);
+      const targetTracksRaw = await getPlaylistTracks(targetPlaylist.id, false, (msg) => setStatus(msg));
       const targetTracks = targetTracksRaw
         .filter(t => (t.item || t.track) && !t.is_local)
         .map(t => t.item || t.track); 
@@ -173,10 +176,10 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
       }
       
       setProgressPercent(15);
-      setStatus("Fetching master pool tracks from Spotify...");
       let masterTracks = [];
       for (const pool of masterPools) {
-        const poolTracksRaw = await getPlaylistTracks(pool.id);
+        setStatus(`Checking master pool "${pool.name}" for updates...`);
+        const poolTracksRaw = await getPlaylistTracks(pool.id, false, (msg) => setStatus(`"${pool.name}": ${msg}`));
         masterTracks = [
           ...masterTracks, 
           ...poolTracksRaw.filter(t => (t.item || t.track) && !t.is_local).map(t => t.item || t.track)
@@ -272,10 +275,18 @@ export default function Analyzer({ targetPlaylist, masterPools, onBack }) {
           keyCounts[effectiveKey] = (keyCounts[effectiveKey] || 0) + 1;
         }
 
-        if (t.artists && t.artists.length > 0) {
+        if (t.artists && Array.isArray(t.artists) && t.artists.length > 0) {
           t.artists.forEach(a => {
-            artistCounts[a.name] = (artistCounts[a.name] || 0) + 1;
+            const aName = typeof a === 'string' ? a : (a?.name || '');
+            if (aName) {
+              artistCounts[aName] = (artistCounts[aName] || 0) + 1;
+            }
           });
+        } else if (t.artist) {
+          const aName = typeof t.artist === 'string' ? t.artist : (t.artist?.name || '');
+          if (aName) {
+            artistCounts[aName] = (artistCounts[aName] || 0) + 1;
+          }
         }
       }
 

@@ -75,13 +75,37 @@ body {
 
 /* App Container */
 .app-container {
-  max-width: 1200px;
+  max-width: 1440px;
+  width: 100%;
   margin: 0 auto;
-  padding: 2rem;
+  padding: 1.75rem 2rem;
   display: flex;
   flex-direction: column;
   gap: 2rem;
 }
+
+/* Responsive Two-Column Flipper Grid with Wide Sticky Player */
+.flipper-grid {
+  display: grid;
+  grid-template-columns: minmax(480px, 540px) 1fr;
+  gap: 1.75rem;
+  align-items: start;
+}
+
+@media (max-width: 1120px) {
+  .flipper-grid {
+    grid-template-columns: minmax(420px, 480px) 1fr;
+    gap: 1.25rem;
+  }
+}
+
+@media (max-width: 940px) {
+  .flipper-grid {
+    grid-template-columns: 1fr;
+    gap: 1.25rem;
+  }
+}
+
 
 /* Header */
 .app-header {
