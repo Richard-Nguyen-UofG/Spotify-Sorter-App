@@ -130,10 +130,11 @@ class RateLimiter:
 SESSION = requests.Session()
 SESSION.headers["User-Agent"] = "SpotifySorter/0.1 (personal desktop app)"
 DEEZER = RateLimiter(8)    # Deezer allows 50 requests / 5 s
-LRCLIB = RateLimiter(2)    # volunteer-run, no published limit: stay gentle
+LRCLIB = RateLimiter(2)    # volunteer-run, no published limit: stay gentle (its latency caps us anyway)
 
 
-def get_json(url, params=None, limiter=None, tries=5):
+def get_json(url, params=None, limiter=None, tries=5, missing=(404,)):
+    """GET JSON with retries on transient errors; statuses in `missing` mean "not found" (None)."""
     for attempt in range(tries):
         if limiter:
             limiter.wait()
@@ -142,7 +143,7 @@ def get_json(url, params=None, limiter=None, tries=5):
         except requests.RequestException:
             time.sleep(2 ** attempt)
             continue
-        if r.status_code == 404:
+        if r.status_code in missing:
             return None
         if r.status_code in (429, 500, 502, 503, 504):
             time.sleep(2 ** attempt + 1)
@@ -344,10 +345,12 @@ def fetch_lyrics(t):
         params = {"artist_name": t["artist"] or "", "track_name": t["name"], "album_name": t["album"] or ""}
         if t["duration_ms"]:
             params["duration"] = round(t["duration_ms"] / 1000)
-        d = get_json("https://lrclib.net/api/get", params, LRCLIB)
+        # /api/get answers 503 (not 404) when it doesn't have a song, so a 503 there means "try
+        # search", not "server busy"; retrying it cost ~36 s per missing song.
+        d = get_json("https://lrclib.net/api/get", params, LRCLIB, tries=2, missing=(404, 503))
         if d is None:
             hits = get_json("https://lrclib.net/api/search",
-                            {"track_name": t["name"], "artist_name": t["artist"] or ""}, LRCLIB) or []
+                            {"track_name": t["name"], "artist_name": t["artist"] or ""}, LRCLIB, tries=3) or []
             secs = (t["duration_ms"] or 0) / 1000
             d = next((h for h in hits if not secs or abs((h.get("duration") or 0) - secs) <= 3), None)
         if not d:
