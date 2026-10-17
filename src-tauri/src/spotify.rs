@@ -374,6 +374,17 @@ impl Spotify {
         Ok(resp["snapshot_id"].as_str().map(str::to_owned))
     }
 
+    /// Creates a private playlist for the current user; returns Spotify's playlist object.
+    pub async fn create_playlist(&self, name: &str) -> AppResult<Value> {
+        self.call(
+            Method::POST,
+            "me/playlists",
+            &[],
+            Some(&json!({ "name": name, "public": false, "description": "Made with Spotify Sorter" })),
+        )
+        .await
+    }
+
     /// Removes every occurrence of the URIs (up to 100) from the playlist.
     pub async fn remove_from_playlist(&self, playlist_id: &str, uris: &[String]) -> AppResult<Option<String>> {
         let items: Vec<Value> = uris.iter().map(|u| json!({ "uri": u })).collect();

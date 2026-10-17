@@ -26,3 +26,7 @@ base64 = "0.22"
 chrono = "0.4"
 thiserror = "2"
 url = "2"
+
+# Explore's similarity search does millions of dot products; keep dev builds usable.
+[profile.dev]
+opt-level = 1

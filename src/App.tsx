@@ -6,8 +6,9 @@ import {
 import Login from './views/Login';
 import Sort from './views/Sort';
 import Playlists from './views/Playlists';
+import Explore from './views/Explore';
 
-type Tab = 'sort' | 'playlists';
+type Tab = 'sort' | 'explore' | 'playlists';
 
 export default function App() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -124,6 +125,9 @@ export default function App() {
           <button className={tab === 'sort' ? 'active' : ''} onClick={() => setTab('sort')}>
             Weekly sort <span className="count">{pendingQueue}</span>
           </button>
+          <button className={tab === 'explore' ? 'active' : ''} onClick={() => setTab('explore')}>
+            Explore
+          </button>
           <button className={tab === 'playlists' ? 'active' : ''} onClick={() => setTab('playlists')}>
             Playlists {unsortedCount > 0 && <span className="count warn">{unsortedCount}</span>}
           </button>
@@ -190,6 +194,14 @@ export default function App() {
             queue={queue}
             canRevert={status.canRevert}
             refreshKey={mlVersion}
+            onChanged={async () => { await loadData(); await refreshStatus(); }}
+            onError={reportError}
+            onNotice={setNotice}
+          />
+        ) : tab === 'explore' ? (
+          <Explore
+            playlists={playlists}
+            analysed={status.mlSongs > 0}
             onChanged={async () => { await loadData(); await refreshStatus(); }}
             onError={reportError}
             onNotice={setNotice}

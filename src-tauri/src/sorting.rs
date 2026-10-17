@@ -527,6 +527,95 @@ pub async fn revert_last_commit(db: &Db, spotify: &Spotify) -> AppResult<CommitS
     })
 }
 
+fn uris_for(conn: &Connection, track_ids: &[String]) -> AppResult<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for id in track_ids {
+        let uri: Option<String> = conn
+            .query_row("SELECT uri FROM tracks WHERE id = ?1", [id], |r| r.get(0))
+            .optional()?;
+        if let Some(uri) = uri {
+            out.push((id.clone(), uri));
+        }
+    }
+    Ok(out)
+}
+
+/// Adds songs straight to a playlist (used by the Explore tools), skipping ones already in it.
+pub async fn add_tracks(db: &Db, spotify: &Spotify, playlist_id: &str, track_ids: &[String]) -> AppResult<usize> {
+    let items: Vec<(String, String)> = {
+        let conn = db::lock(db);
+        let mut items = Vec::new();
+        for (id, uri) in uris_for(&conn, track_ids)? {
+            let present: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2)",
+                params![playlist_id, id],
+                |r| r.get(0),
+            )?;
+            if !present {
+                items.push((id, uri));
+            }
+        }
+        items
+    };
+    for chunk in items.chunks(100) {
+        let uris: Vec<String> = chunk.iter().map(|(_, u)| u.clone()).collect();
+        let snapshot = spotify.add_to_playlist(playlist_id, &uris).await?;
+        let conn = db::lock(db);
+        let now = chrono::Utc::now().to_rfc3339();
+        for (id, _) in chunk {
+            conn.execute(
+                "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, added_at) VALUES (?1, ?2, ?3)",
+                params![playlist_id, id, now],
+            )?;
+        }
+        record_snapshot(&conn, playlist_id, snapshot.as_deref(), chunk.len() as i64)?;
+    }
+    Ok(items.len())
+}
+
+/// Removes songs from a playlist (Explore → Misfits).
+pub async fn remove_tracks(db: &Db, spotify: &Spotify, playlist_id: &str, track_ids: &[String]) -> AppResult<usize> {
+    let items = uris_for(&db::lock(db), track_ids)?;
+    for chunk in items.chunks(100) {
+        let uris: Vec<String> = chunk.iter().map(|(_, u)| u.clone()).collect();
+        let snapshot = spotify.remove_from_playlist(playlist_id, &uris).await?;
+        let conn = db::lock(db);
+        for (id, _) in chunk {
+            conn.execute(
+                "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
+                params![playlist_id, id],
+            )?;
+        }
+        record_snapshot(&conn, playlist_id, snapshot.as_deref(), -(chunk.len() as i64))?;
+    }
+    Ok(items.len())
+}
+
+/// Creates a private playlist with the given songs and files it under Random Ideas.
+pub async fn create_playlist(db: &Db, spotify: &Spotify, name: &str, track_ids: &[String]) -> AppResult<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AppError::msg("Give the playlist a name."));
+    }
+    let created = spotify.create_playlist(name).await?;
+    let id = created["id"]
+        .as_str()
+        .ok_or_else(|| AppError::msg("Spotify didn't return the new playlist's ID."))?
+        .to_owned();
+    {
+        let conn = db::lock(db);
+        // Mirror it locally so it shows up without a sync; the snapshot keeps the next sync cheap.
+        conn.execute(
+            "INSERT OR REPLACE INTO playlists
+                (id, name, snapshot_id, synced_snapshot_id, owned, total, kind, list_position, present)
+             VALUES (?1, ?2, ?3, ?3, 1, 0, 'idea', -1, 1)",
+            params![id, name, created["snapshot_id"].as_str()],
+        )?;
+    }
+    add_tracks(db, spotify, &id, track_ids).await?;
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::semester_name;

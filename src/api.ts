@@ -64,6 +64,18 @@ export interface Status {
   mlAvailable: boolean;
   mlRunning: boolean;
   mlTrainedAt: string | null;
+  mlSongs: number;
+}
+
+/** A library song found by an Explore search. */
+export interface Match {
+  track: Track;
+  /** Ranking score within its group (only comparable inside one search). */
+  score: number;
+  /** "artist": shares artists with the seeds; "sound": other artists, by sound; "misfit": least typical. */
+  group: 'artist' | 'sound' | 'misfit';
+  /** Why it's listed, e.g. "3 of 5 songs by Cafuné are in this playlist". */
+  reason: string;
 }
 
 export interface SyncProgress { message: string; done: number; total: number }
@@ -89,6 +101,15 @@ export const api = {
   commit: () => invoke<CommitSummary>('commit'),
   revertLastCommit: () => invoke<CommitSummary>('revert_last_commit'),
   openInSpotify: (uri: string) => invoke<void>('open_in_spotify', { uri }),
+  exploreGrow: (playlistId: string, includeInternal: boolean) =>
+    invoke<Match[]>('explore_grow', { playlistId, includeInternal }),
+  exploreMisfits: (playlistId: string) => invoke<Match[]>('explore_misfits', { playlistId }),
+  exploreSimilar: (trackIds: string[], includeInternal: boolean) =>
+    invoke<Match[]>('explore_similar', { trackIds, includeInternal }),
+  searchLibrary: (query: string) => invoke<Track[]>('search_library', { query }),
+  addTracks: (playlistId: string, trackIds: string[]) => invoke<number>('add_tracks', { playlistId, trackIds }),
+  removeTracks: (playlistId: string, trackIds: string[]) => invoke<number>('remove_tracks', { playlistId, trackIds }),
+  createPlaylist: (name: string, trackIds: string[]) => invoke<string>('create_playlist', { name, trackIds }),
 };
 
 export function onSyncProgress(cb: (p: SyncProgress) => void): Promise<UnlistenFn> {

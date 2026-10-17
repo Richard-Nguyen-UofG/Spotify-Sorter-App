@@ -1,5 +1,6 @@
 mod db;
 mod error;
+mod explore;
 mod ml;
 mod model;
 mod sorting;
@@ -22,6 +23,35 @@ pub struct AppState {
     db: Db,
     db_path: PathBuf,
     spotify: Spotify,
+    /// Sound/lyrics vectors for Explore, loaded on first use and dropped after each analysis run.
+    vectors: Mutex<Option<Arc<explore::VectorIndex>>>,
+}
+
+impl AppState {
+    fn vectors(&self) -> AppResult<Arc<explore::VectorIndex>> {
+        let mut slot = self.vectors.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(index) = slot.as_ref() {
+            return Ok(index.clone());
+        }
+        let index = Arc::new(explore::VectorIndex::build(&db::lock(&self.db))?);
+        if index.len() == 0 {
+            return Err(AppError::msg("No songs have been analysed yet. Run Analyse audio first."));
+        }
+        *slot = Some(index.clone());
+        Ok(index)
+    }
+}
+
+/// Runs a CPU-heavy Explore search off the main thread.
+async fn explore_task<T: Send + 'static>(
+    state: &AppState,
+    f: impl FnOnce(&explore::VectorIndex, &rusqlite::Connection) -> AppResult<T> + Send + 'static,
+) -> AppResult<T> {
+    let index = state.vectors()?;
+    let db = state.db.clone();
+    tauri::async_runtime::spawn_blocking(move || f(&index, &db::lock(&db)))
+        .await
+        .map_err(|e| AppError::msg(e.to_string()))?
 }
 
 const KINDS: &[&str] = &[
@@ -37,7 +67,10 @@ async fn status(state: State<'_, AppState>) -> AppResult<Status> {
         .query_row("SELECT value FROM ml_meta WHERE key = 'trained_at'", [], |r| r.get(0))
         .ok()
         .and_then(|v: String| serde_json::from_str(&v).ok());
+    let ml_songs: i64 =
+        conn.query_row("SELECT COUNT(*) FROM ml_audio WHERE status = 'ok'", [], |r| r.get(0))?;
     Ok(Status {
+        ml_songs,
         ml_available,
         ml_running: ml::is_running(),
         ml_trained_at,
@@ -107,7 +140,55 @@ async fn sync_library(app: AppHandle, state: State<'_, AppState>, force: bool) -
 /// Analyses new songs' audio and lyrics, retrains, and rescores Liked Songs.
 #[tauri::command]
 async fn run_ml(app: AppHandle, state: State<'_, AppState>) -> AppResult<()> {
-    ml::run_update(&app, &state.db, &state.db_path).await
+    ml::run_update(&app, &state.db, &state.db_path).await?;
+    *state.vectors.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    Ok(())
+}
+
+#[tauri::command]
+async fn explore_grow(
+    state: State<'_, AppState>,
+    playlist_id: String,
+    include_internal: bool,
+) -> AppResult<Vec<explore::Match>> {
+    explore_task(&state, move |index, conn| explore::grow(index, conn, &playlist_id, include_internal)).await
+}
+
+#[tauri::command]
+async fn explore_misfits(state: State<'_, AppState>, playlist_id: String) -> AppResult<Vec<explore::Match>> {
+    explore_task(&state, move |index, conn| explore::misfits(index, conn, &playlist_id)).await
+}
+
+#[tauri::command]
+async fn explore_similar(
+    state: State<'_, AppState>,
+    track_ids: Vec<String>,
+    include_internal: bool,
+) -> AppResult<Vec<explore::Match>> {
+    explore_task(&state, move |index, conn| {
+        explore::find(index, conn, &track_ids, explore::Seeds::Picks, include_internal)
+    })
+    .await
+}
+
+#[tauri::command]
+fn search_library(state: State<'_, AppState>, query: String) -> AppResult<Vec<model::Track>> {
+    explore::search(&db::lock(&state.db), &query)
+}
+
+#[tauri::command]
+async fn add_tracks(state: State<'_, AppState>, playlist_id: String, track_ids: Vec<String>) -> AppResult<usize> {
+    sorting::add_tracks(&state.db, &state.spotify, &playlist_id, &track_ids).await
+}
+
+#[tauri::command]
+async fn remove_tracks(state: State<'_, AppState>, playlist_id: String, track_ids: Vec<String>) -> AppResult<usize> {
+    sorting::remove_tracks(&state.db, &state.spotify, &playlist_id, &track_ids).await
+}
+
+#[tauri::command]
+async fn create_playlist(state: State<'_, AppState>, name: String, track_ids: Vec<String>) -> AppResult<String> {
+    sorting::create_playlist(&state.db, &state.spotify, &name, &track_ids).await
 }
 
 #[tauri::command]
@@ -214,6 +295,7 @@ pub fn run() {
                 spotify: Spotify::new(client_id, db.clone()),
                 db,
                 db_path,
+                vectors: Mutex::new(None),
             });
             Ok(())
         })
@@ -225,6 +307,13 @@ pub fn run() {
             logout,
             sync_library,
             run_ml,
+            explore_grow,
+            explore_misfits,
+            explore_similar,
+            search_library,
+            add_tracks,
+            remove_tracks,
+            create_playlist,
             get_playlists,
             update_playlist,
             get_queue,

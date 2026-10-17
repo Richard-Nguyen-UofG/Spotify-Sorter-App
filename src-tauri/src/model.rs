@@ -173,4 +173,6 @@ pub struct Status {
     pub ml_available: bool,
     pub ml_running: bool,
     pub ml_trained_at: Option<String>,
+    /// Songs with an audio embedding (Explore works once this is non-zero).
+    pub ml_songs: i64,
 }

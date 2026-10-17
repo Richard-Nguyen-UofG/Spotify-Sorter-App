@@ -50,8 +50,12 @@ NEIGHBOURS = 120        # sound-alikes per song (best of 25/60/120 in cross-vali
 HISTORY_WEIGHT = 2.0    # keep in sync with HISTORY_WEIGHT in src-tauri/src/sorting.rs
 
 KEEPER_KINDS = ("pool", "vibe", "exercise", "idea")
-# Songs in these playlists are songs the user has heard; they're the reference library.
-HEARD_KINDS = KEEPER_KINDS + ("internal", "skimmed", "gold", "gold_all", "semester")
+# Songs the user kept (Skimmed Internal or a real playlist): the sound-alike reference library.
+# Searching only these beat searching every heard song in cross-validation (46% vs 44% on new
+# artists): Internal-only songs belong to no playlist and just dilute the votes.
+KEPT_KINDS = KEEPER_KINDS + ("skimmed", "gold", "gold_all")
+# Every song the user has heard gets features, so the app can optionally search Internal-only ones.
+HEARD_KINDS = KEPT_KINDS + ("internal", "semester")
 MIN_MEMBERS = 5
 
 SR = 48000
@@ -441,20 +445,31 @@ class Library:
         self.targets = [pid for pid, p in self.playlists.items()
                         if p["kind"] in KEEPER_KINDS
                         and len([t for t in self.members[pid] if t in self.audio]) >= MIN_MEMBERS]
-        heard = set()
+        kept = set()
         for pid, p in self.playlists.items():
-            if p["kind"] in HEARD_KINDS:
-                heard |= self.members[pid]
-        # Reference songs: heard songs we have audio for.
-        self.universe = sorted(t for t in heard if t in self.audio)
+            if p["kind"] in KEPT_KINDS:
+                kept |= self.members[pid]
+        # Reference songs: kept songs we have audio for.
+        self.universe = sorted(t for t in kept if t in self.audio)
 
     def vectors(self, ids):
-        """Unit-length audio embedding, with the lyrics embedding (when known) mixed in."""
+        """Audio embedding with the lyrics embedding (when known) mixed in, unit length.
+
+        Each part is centred on the library average first: raw CLAP vectors all share a big
+        common component (average cosine between two songs ~0.96), which makes a few "hub"
+        songs look similar to everything. Mirrors VectorIndex::build in src-tauri/src/explore.rs.
+        """
+        if not hasattr(self, "_means"):
+            self._means = (np.mean(list(self.audio.values()), axis=0),
+                           np.mean(list(self.lyrics.values()), axis=0) if self.lyrics else np.zeros(TEXT_DIM))
+        audio_mean, lyrics_mean = self._means
         X = np.zeros((len(ids), AUDIO_DIM + TEXT_DIM), np.float32)
         for i, t in enumerate(ids):
-            X[i, :AUDIO_DIM] = self.audio[t]
+            a = self.audio[t] - audio_mean
+            X[i, :AUDIO_DIM] = a / (np.linalg.norm(a) + 1e-9)
             if t in self.lyrics:
-                X[i, AUDIO_DIM:] = LYRICS_WEIGHT * self.lyrics[t]
+                l = self.lyrics[t] - lyrics_mean
+                X[i, AUDIO_DIM:] = LYRICS_WEIGHT * l / (np.linalg.norm(l) + 1e-9)
         return X / np.linalg.norm(X, axis=1, keepdims=True)
 
     def labels(self, ids):
@@ -608,12 +623,34 @@ def score_liked(db):
 
 # ----------------------------------------------------------------------------- main
 
+def acquire_lock(db_path):
+    """One analysis at a time (the app runs one after every sync); returns None if taken."""
+    handle = open(db_path + ".ml-lock", "a+")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=["update", "eval"])
     parser.add_argument("--db", default=default_db())
     parser.add_argument("--skip-lyrics", action="store_true")
     args = parser.parse_args()
+
+    lock = acquire_lock(args.db)
+    if lock is None:
+        emit("done", "Another audio analysis is already running")
+        return
 
     db = connect(args.db)
     ids = tracks_needing_features(db)
