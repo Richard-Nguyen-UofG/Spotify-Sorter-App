@@ -46,7 +46,7 @@ import requests
 AUDIO_MODEL = "laion/larger_clap_music"
 TEXT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 AUDIO_DIM, TEXT_DIM = 512, 384
-LYRICS_WEIGHT = 0.6     # how much lyrics count next to audio when comparing songs
+LYRICS_WEIGHT = 1.0     # lyrics count as much as audio (best of 0–1.5 in cross-validation)
 NEIGHBOURS = 120        # sound-alikes per song (best of 25/60/120 in cross-validation)
 HISTORY_WEIGHT = 2.0    # keep in sync with HISTORY_WEIGHT in src-tauri/src/sorting.rs
 

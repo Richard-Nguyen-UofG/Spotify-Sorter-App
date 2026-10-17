@@ -51,13 +51,13 @@ Windows Credential Manager.
 - **Audio:** each song's 30 s Deezer preview (looked up by ISRC) is embedded with the
   [CLAP music model](https://huggingface.co/laion/larger_clap_music) on the GPU. Previews are
   decoded in memory and discarded; only the embedding is stored.
-- **Lyrics:** fetched from [LRCLIB](https://lrclib.net) (rate-limited to 2 requests/s) and
+- **Lyrics:** fetched from [LRCLIB](https://lrclib.net) (one request at a time, 1 per second, as its API guidelines ask) and
   embedded with a multilingual sentence model.
 - **Sound-alikes:** for each Liked Song, the 120 most similar songs in your library vote for the
   playlists they're in. The app blends that with artist history (history weighted 2×).
 
 Cross-validated on the author's library (vibe playlist in the top 3): artist history alone 47%,
-sound-alikes + history 63%; for artists with no history, 0% → 43%. A trained linear model and
+sound-alikes + history 70% (65% without lyrics); for artists with no history, 0% → 57%. A trained linear model and
 mood/pace prediction were tried and did no better than these baselines, so they were dropped.
 
 The app runs it after each sync (only new songs need downloading) and from **Analyse audio** in the

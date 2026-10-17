@@ -20,7 +20,7 @@ const AUDIO_DIM: usize = 512;
 const TEXT_DIM: usize = 384;
 const DIM: usize = AUDIO_DIM + TEXT_DIM;
 /// Must match LYRICS_WEIGHT in ml/sorter_ml.py.
-const LYRICS_WEIGHT: f32 = 0.6;
+const LYRICS_WEIGHT: f32 = 1.0;
 /// A candidate's sound score is its mean similarity to its closest few seed songs, so a playlist
 /// with two distinct moods can still pull in songs that match either one.
 const TOP_K: usize = 5;
