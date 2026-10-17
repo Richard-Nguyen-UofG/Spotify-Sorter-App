@@ -31,6 +31,7 @@ import io
 import json
 import math
 import queue
+import random
 import re
 import sqlite3
 import sys
@@ -133,13 +134,25 @@ class RateLimiter:
 
 
 SESSION = requests.Session()
-SESSION.headers["User-Agent"] = "SpotifySorter/0.1 (personal desktop app)"
-DEEZER = RateLimiter(8)    # Deezer allows 50 requests / 5 s
-LRCLIB = RateLimiter(2)    # volunteer-run, no published limit: stay gentle (its latency caps us anyway)
+# LRCLIB requires the app name, version and a homepage link (or email) in the User-Agent.
+SESSION.headers["User-Agent"] = "SpotifySorter v0.1 (https://github.com/Richard-Nguyen-UofG/Spotify-Sorter-App)"
+DEEZER = RateLimiter(8)      # Deezer allows 50 requests / 5 s
+# LRCLIB gives identified clients ~90 requests/min and asks for one request at a time with a
+# short pause between; 1.25/s (75/min) on a single worker stays under that.
+LRCLIB = RateLimiter(1.25)
 
 
-def get_json(url, params=None, limiter=None, tries=5, missing=(404,)):
-    """GET JSON with retries on transient errors; statuses in `missing` mean "not found" (None)."""
+def retry_after(response, attempt):
+    """Seconds to wait before retrying: the server's Retry-After plus up to 30% jitter, else backoff."""
+    try:
+        wait = float(response.headers.get("Retry-After", ""))
+    except ValueError:
+        wait = 2 ** attempt + 1
+    return wait * (1 + random.uniform(0, 0.3))
+
+
+def get_json(url, params=None, limiter=None, tries=5):
+    """GET JSON, retrying transient failures (honouring Retry-After); None on 404."""
     for attempt in range(tries):
         if limiter:
             limiter.wait()
@@ -148,10 +161,10 @@ def get_json(url, params=None, limiter=None, tries=5, missing=(404,)):
         except requests.RequestException:
             time.sleep(2 ** attempt)
             continue
-        if r.status_code in missing:
+        if r.status_code == 404:
             return None
         if r.status_code in (429, 500, 502, 503, 504):
-            time.sleep(2 ** attempt + 1)
+            time.sleep(retry_after(r, attempt))
             continue
         r.raise_for_status()
         return r.json()
@@ -364,12 +377,11 @@ def fetch_lyrics(t):
         params = {"artist_name": t["artist"] or "", "track_name": t["name"], "album_name": t["album"] or ""}
         if t["duration_ms"]:
             params["duration"] = round(t["duration_ms"] / 1000)
-        # /api/get answers 503 (not 404) when it doesn't have a song, so a 503 there means "try
-        # search", not "server busy"; retrying it cost ~36 s per missing song.
-        d = get_json("https://lrclib.net/api/get", params, LRCLIB, tries=2, missing=(404, 503))
+        # /api/get only matches within ±2 s of the duration; search catches near-misses.
+        d = get_json("https://lrclib.net/api/get", params, LRCLIB)
         if d is None:
             hits = get_json("https://lrclib.net/api/search",
-                            {"track_name": t["name"], "artist_name": t["artist"] or ""}, LRCLIB, tries=3) or []
+                            {"track_name": t["name"], "artist_name": t["artist"] or ""}, LRCLIB) or []
             secs = (t["duration_ms"] or 0) / 1000
             d = next((h for h in hits if not secs or abs((h.get("duration") or 0) - secs) <= 3), None)
         if not d:
@@ -441,7 +453,8 @@ def fill_lyrics(db, ids):
                 "INSERT OR REPLACE INTO ml_lyrics (track_id, status, embedding, updated_at) VALUES (?, ?, NULL, ?)",
                 (tid, status, now()))
 
-    run_pool(tracks, fetch_lyrics, consume, workers=2, stage="lyrics", label="Fetching lyrics")
+    # One worker: LRCLIB asks clients to send requests sequentially.
+    run_pool(tracks, fetch_lyrics, consume, workers=1, stage="lyrics", label="Fetching lyrics")
     db.commit()
 
 
