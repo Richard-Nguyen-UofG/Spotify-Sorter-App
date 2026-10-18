@@ -88,18 +88,23 @@ pub fn track_context(conn: &Connection, track_id: &str) -> AppResult<TrackContex
     let gold_name = format!("{} Gold", liked.year());
 
     // Same recording under a different track ID (single vs album) shares an ISRC.
+    // Any copy of the recording counts: other releases (same ISRC) and explicit/clean twins.
     let already_in: Vec<String> = {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT pt.playlist_id FROM playlist_tracks pt
-             JOIN tracks t ON t.id = pt.track_id
              JOIN playlists p ON p.id = pt.playlist_id
-             WHERE p.present = 1
-               AND (t.id = ?1 OR (t.isrc IS NOT NULL AND t.isrc = (SELECT isrc FROM tracks WHERE id = ?1)))",
+             WHERE p.present = 1 AND pt.track_id = ?1",
         )?;
-        let rows = stmt
-            .query_map([track_id], |r| r.get(0))?
-            .collect::<Result<_, _>>()?;
-        rows
+        let mut found = Vec::new();
+        for id in db::same_song_ids(conn, track_id)? {
+            for row in stmt.query_map([&id], |r| r.get::<_, String>(0))? {
+                let pid = row?;
+                if !found.contains(&pid) {
+                    found.push(pid);
+                }
+            }
+        }
+        found
     };
 
     let (suggestions, audio_analysed) = blended_suggestions(conn, track_id)?;
@@ -319,16 +324,20 @@ pub async fn commit(db: &Db, spotify: &Spotify) -> AppResult<CommitSummary> {
         let commit_id: i64 =
             conn.query_row("SELECT COALESCE(MAX(commit_id), 0) + 1 FROM filings", [], |r| r.get(0))?;
 
-        // Skip playlists that already hold the song so nothing gets duplicated.
+        // Skip playlists that already hold any copy of the song so nothing gets duplicated.
         let mut pending: HashMap<String, HashSet<String>> = HashMap::new();
         for row in &rows {
+            let copies = db::same_song_ids(&conn, &row.track_id)?;
             let mut needed = HashSet::new();
             for pid in &row.playlists {
-                let present: bool = conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2)",
-                    params![pid, row.track_id],
-                    |r| r.get(0),
-                )?;
+                let mut present = false;
+                for id in &copies {
+                    present |= conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2)",
+                        params![pid, id],
+                        |r| r.get::<_, bool>(0),
+                    )?;
+                }
                 if !present {
                     needed.insert(pid.clone());
                 }

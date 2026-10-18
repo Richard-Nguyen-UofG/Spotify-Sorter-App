@@ -234,6 +234,44 @@ pub fn upsert_track(tx: &Transaction, track: &Track) -> AppResult<()> {
     Ok(())
 }
 
+/// Lowercased title with punctuation and extra spaces removed, for matching re-releases.
+pub fn normalise_title(title: &str) -> String {
+    title
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// IDs of every copy of the same recording: the track itself, other releases with the same ISRC,
+/// and tracks by the same lead artist with the same title and length (±2 s), which catches
+/// explicit/clean and re-release pairs that got a new ISRC.
+pub fn same_song_ids(conn: &Connection, track_id: &str) -> AppResult<Vec<String>> {
+    let Some(track) = load_track(conn, track_id)? else { return Ok(vec![track_id.to_owned()]) };
+    let mut ids = vec![track.id.clone()];
+    if let Some(isrc) = &track.isrc {
+        let mut stmt = conn.prepare("SELECT id FROM tracks WHERE isrc = ?1 AND id != ?2")?;
+        for id in stmt.query_map(params![isrc, track.id], |r| r.get::<_, String>(0))? {
+            ids.push(id?);
+        }
+    }
+    if let (Some(lead), Some(duration)) = (track.artists.first().and_then(|a| a.id.clone()), track.duration_ms) {
+        let title = normalise_title(&track.name);
+        let mut stmt = conn.prepare(
+            "SELECT t.id, t.name FROM tracks t JOIN track_artists ta ON ta.track_id = t.id AND ta.position = 0
+             WHERE ta.artist_id = ?1 AND t.id != ?2 AND ABS(COALESCE(t.duration_ms, 0) - ?3) <= 2000",
+        )?;
+        for row in stmt.query_map(params![lead, track.id, duration], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (id, name) = row?;
+            if normalise_title(&name) == title && !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    Ok(ids)
+}
+
 pub fn load_track(conn: &Connection, id: &str) -> AppResult<Option<Track>> {
     let track = conn
         .query_row(
@@ -267,4 +305,16 @@ pub fn load_track(conn: &Connection, id: &str) -> AppResult<Option<Track>> {
         })?
         .collect::<Result<_, _>>()?;
     Ok(Some(track))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalise_title;
+
+    #[test]
+    fn titles_normalise_for_matching() {
+        assert_eq!(normalise_title("I Like You (A Happier Song) (with Doja Cat)"), "i like you a happier song with doja cat");
+        assert_eq!(normalise_title("  BANDIT!! "), "bandit");
+        assert_eq!(normalise_title("ギミアブレスタッナウ"), "ギミアブレスタッナウ");
+    }
 }

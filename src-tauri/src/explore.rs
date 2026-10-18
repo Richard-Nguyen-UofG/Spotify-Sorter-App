@@ -247,12 +247,15 @@ pub fn find(
     kind: Seeds,
     include_internal: bool,
 ) -> AppResult<Vec<Match>> {
-    let seed_set: HashSet<&String> = seeds.iter().collect();
+    // Leave out the seeds and every other copy of them (same ISRC, or explicit/clean twins).
+    let mut seed_set: HashSet<String> = HashSet::new();
+    for s in seeds {
+        seed_set.extend(db::same_song_ids(conn, s)?);
+    }
     let isrc = isrcs(conn)?;
-    let seed_isrcs: HashSet<&String> = seeds.iter().filter_map(|t| isrc.get(t)).collect();
     let candidates: Vec<String> = track_pool(conn, include_internal)?
         .into_iter()
-        .filter(|t| !seed_set.contains(t) && isrc.get(t).map_or(true, |i| !seed_isrcs.contains(i)))
+        .filter(|t| !seed_set.contains(t))
         .collect();
 
     // Artist evidence: how many of each artist's songs are among the seeds.
