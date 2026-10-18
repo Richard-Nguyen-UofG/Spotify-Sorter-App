@@ -259,6 +259,20 @@ impl Spotify {
         *last = Instant::now();
     }
 
+    /// Keeps the raw details of the latest rate-limit/quota response (settings key
+    /// `last_spotify_error`), so what Spotify actually said can be checked later.
+    fn record_error(&self, status: u16, path: &str, retry_after: u64, body: &str) {
+        let detail = json!({
+            "at": chrono::Local::now().to_rfc3339(),
+            "status": status,
+            "endpoint": path.split('?').next().unwrap_or(path).replace(API, ""),
+            "retry_after": retry_after,
+            "body": body.chars().take(1000).collect::<String>(),
+        });
+        let conn = db::lock(&self.db);
+        let _ = db::set_setting(&conn, "last_spotify_error", &detail.to_string());
+    }
+
     fn count_call(&self) {
         let conn = db::lock(&self.db);
         let _ = db::bump_api_calls(&conn);
@@ -307,8 +321,13 @@ impl Spotify {
                     .and_then(|s| s.trim().parse::<u64>().ok())
                     .unwrap_or(5);
                 let text = resp.text().await.unwrap_or_default();
+                self.record_error(status.as_u16(), path, wait, &text);
                 if text.contains("QUOTA_EXCEEDED") {
-                    return Err(AppError::QuotaExceeded);
+                    let message = serde_json::from_str::<Value>(&text)
+                        .ok()
+                        .and_then(|v| v["error"]["message"].as_str().or(v["message"].as_str()).map(str::to_owned))
+                        .unwrap_or_else(|| text.chars().take(200).collect());
+                    return Err(AppError::QuotaExceeded { wait_secs: wait, message });
                 }
                 if wait <= 30 && attempt < 4 {
                     tokio::time::sleep(Duration::from_secs(wait + 1)).await;
@@ -487,5 +506,35 @@ async fn wait_for_callback(listener: TcpListener) -> AppResult<HashMap<String, S
         );
         let _ = stream.write_all(response.as_bytes()).await;
         return Ok(params);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// One raw request against the real account, printing Spotify's exact response.
+    /// `cargo test --release raw_me_response -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn raw_me_response() {
+        use std::sync::{Arc, Mutex};
+        let path = std::path::Path::new(&std::env::var("APPDATA").unwrap())
+            .join("com.richardnguyen.spotifysorter")
+            .join("sorter.db");
+        let conn = crate::db::open(&path).unwrap();
+        let client_id = crate::db::get_setting(&conn, "client_id")
+            .unwrap()
+            .or_else(|| option_env!("SPOTIFY_CLIENT_ID").map(str::to_owned))
+            .unwrap();
+        let db: crate::db::Db = Arc::new(Mutex::new(conn));
+        let spotify = super::Spotify::new(client_id, db);
+        tauri::async_runtime::block_on(async {
+            let token = spotify.access_token().await.expect("token refresh (accounts service, not the API quota)");
+            let resp = spotify.http.get(format!("{}/me", super::API)).bearer_auth(token).send().await.unwrap();
+            println!("status: {}", resp.status());
+            for h in ["retry-after", "content-type"] {
+                println!("{h}: {:?}", resp.headers().get(h));
+            }
+            println!("body: {}", resp.text().await.unwrap().chars().take(400).collect::<String>());
+        });
     }
 }

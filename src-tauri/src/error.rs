@@ -6,8 +6,10 @@ pub enum AppError {
     NotLoggedIn,
     #[error("Spotify is rate limiting requests. Try again in about {0} seconds.")]
     RateLimited(u64),
-    #[error("Spotify's daily request quota for this developer account is used up. Try again later.")]
-    QuotaExceeded,
+    /// A 429 marked QUOTA_EXCEEDED. Spotify doesn't publish the quota or its window, so the
+    /// message only repeats what Spotify said.
+    #[error("Spotify says this developer account is over its request quota (QUOTA_EXCEEDED); it asked to wait about {wait_secs} s. Spotify's message: {message}")]
+    QuotaExceeded { wait_secs: u64, message: String },
     #[error("Spotify API error {status} on {endpoint}: {body}")]
     Api {
         status: u16,
