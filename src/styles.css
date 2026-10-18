@@ -203,6 +203,11 @@ kbd {
 .reason { min-width: 0; }
 .result-group { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
 .result-group h3 { margin: 6px 0 4px; }
+button.group-toggle {
+  background: none; border: none; padding: 0; color: var(--text); font: inherit; font-weight: inherit;
+  display: inline-flex; align-items: baseline; gap: 8px; text-align: left;
+}
+.group-toggle .chevron { display: inline-block; width: 0.8em; color: var(--muted); }
 button.danger { background: var(--danger); color: #000; }
 
 /* ---------- playlists ---------- */

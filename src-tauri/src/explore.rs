@@ -5,7 +5,9 @@
 //! author's library, hiding 20% of a vibe playlist and growing it from the rest showed ~18% of
 //! the hidden songs in the artist group ("other songs by this artist are here") and ~8.5% more
 //! in the sound group (MERT audio + lyrics + genres; 5% without genres; 45 random songs: ~2%).
-//! So artist matches come first, then sound-alikes from other artists.
+//! The sound group holds other artists only: mixed in, same-artist songs crowd it and fewer new
+//! artists' songs turn up (9.4% of them in 45 slots, vs 12.3% in the 25 sound slots). The UI
+//! shows the sound group first.
 
 use std::collections::{HashMap, HashSet};
 

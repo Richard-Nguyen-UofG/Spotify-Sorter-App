@@ -19,8 +19,8 @@ const MODES: { value: Mode; label: string; help: string }[] = [
 ];
 
 const GROUP_TITLES: Record<Match['group'], { title: string; note: string }> = {
-  artist: { title: 'By artists already in it', note: 'the most reliable picks' },
-  sound: { title: 'Sounds like it', note: 'other artists, by audio and lyrics; good ideas, worth a listen' },
+  sound: { title: 'Sounds like it', note: 'other artists, by audio, lyrics and genre; worth a listen' },
+  artist: { title: 'By artists already in it', note: 'more songs by the same artists' },
   misfit: { title: 'Least like the rest', note: 'worst fit first; give them a listen before removing' },
 };
 
@@ -39,6 +39,8 @@ export default function Explore({ playlists, analysed, onChanged, onError, onNot
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  // Result sections the user folded away; kept across searches.
+  const [collapsed, setCollapsed] = useState<Set<Match['group']>>(new Set());
 
   // "From a few songs"
   const [seeds, setSeeds] = useState<Track[]>([]);
@@ -152,7 +154,8 @@ export default function Explore({ playlists, analysed, onChanged, onError, onNot
 
   const canRun = mode === 'seeds' ? seeds.length > 0 : !!playlistId;
   const current = MODES.find((m) => m.value === mode)!;
-  const groups = (['artist', 'sound', 'misfit'] as const)
+  // Sound-alikes first: they're the songs you wouldn't find by browsing an artist.
+  const groups = (['sound', 'artist', 'misfit'] as const)
     .map((g) => ({ group: g, items: results?.filter((m) => m.group === g) ?? [] }))
     .filter((g) => g.items.length > 0);
 
@@ -228,13 +231,23 @@ export default function Explore({ playlists, analysed, onChanged, onError, onNot
         {groups.map(({ group, items }) => {
           const scores = items.map((m) => m.score);
           const [lo, hi] = [Math.min(...scores), Math.max(...scores)];
+          const open = !collapsed.has(group);
           return (
             <section key={group} className="result-group">
               <h3>
-                {GROUP_TITLES[group].title}{' '}
-                <span className="muted small">{GROUP_TITLES[group].note}</span>
+                <button className="group-toggle" aria-expanded={open}
+                  onClick={() => setCollapsed((c) => {
+                    const next = new Set(c);
+                    if (open) next.add(group);
+                    else next.delete(group);
+                    return next;
+                  })}>
+                  <span className="chevron" aria-hidden>{open ? '▾' : '▸'}</span>
+                  {GROUP_TITLES[group].title} ({items.length})
+                  <span className="muted small">{GROUP_TITLES[group].note}</span>
+                </button>
               </h3>
-              {items.map((m) => (
+              {open && items.map((m) => (
                 <div key={m.track.id} className={`result${selected.has(m.track.id) ? ' selected' : ''}`}>
                   <div className="result-row">
                     <input type="checkbox" checked={selected.has(m.track.id)} onChange={() => toggle(m.track.id)} />
