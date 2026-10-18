@@ -62,7 +62,10 @@ const KINDS: &[&str] = &[
 async fn status(state: State<'_, AppState>) -> AppResult<Status> {
     let logged_in = state.spotify.has_login().await;
     let ml_available = ml::available(&state.db);
-    let cooldown_secs = state.spotify.cooldown_left();
+    let cooldown_secs = ["me/playlists", "playlists/{id}/items", "me/tracks"]
+        .iter()
+        .filter_map(|e| state.spotify.cooldown_left(e))
+        .max();
     let conn = db::lock(&state.db);
     let ml_trained_at: Option<String> = conn
         .query_row("SELECT value FROM ml_meta WHERE key = 'trained_at'", [], |r| r.get(0))

@@ -261,21 +261,38 @@ impl Spotify {
         *last = Instant::now();
     }
 
-    /// Seconds left of a pause Spotify asked for (stored, so it also holds across restarts).
-    pub fn cooldown_left(&self) -> Option<u64> {
+    /// Pauses Spotify asked for, per endpoint (`spotify_pauses` setting: endpoint -> RFC 3339 time).
+    /// Spotify's quota turned out to be per endpoint: during a 12-hour block on `me/playlists`,
+    /// `/me` still answered normally.
+    fn pauses(&self) -> std::collections::HashMap<String, String> {
         let conn = db::lock(&self.db);
-        let until = db::get_setting(&conn, "spotify_paused_until").ok().flatten()?;
+        db::get_setting(&conn, "spotify_pauses")
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// Seconds left of a pause on this endpoint (stored, so it also holds across restarts).
+    pub fn cooldown_left(&self, path: &str) -> Option<u64> {
+        let until = self.pauses().remove(&endpoint_key(path))?;
         let until = chrono::DateTime::parse_from_rfc3339(&until).ok()?;
         let left = (until.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds();
         (left > 0).then_some(left as u64)
     }
 
-    /// Spotify's QUOTA_EXCEEDED cooldown restarts if anything is sent before it ends, so nothing
-    /// is sent until it has passed (plus a small margin).
-    fn pause_for(&self, secs: u64) {
-        let until = chrono::Utc::now() + chrono::Duration::seconds(secs as i64 + 3);
+    /// Spotify's QUOTA_EXCEEDED cooldown restarts if the endpoint is called before it ends, so
+    /// that endpoint isn't called until it has passed (plus a small margin).
+    fn pause_for(&self, path: &str, secs: u64) {
+        let mut pauses = self.pauses();
+        let now = chrono::Utc::now();
+        pauses.retain(|_, until| {
+            chrono::DateTime::parse_from_rfc3339(until).map_or(false, |u| u.with_timezone(&chrono::Utc) > now)
+        });
+        let until = now + chrono::Duration::seconds(secs as i64 + 3);
+        pauses.insert(endpoint_key(path), until.to_rfc3339());
         let conn = db::lock(&self.db);
-        let _ = db::set_setting(&conn, "spotify_paused_until", &until.to_rfc3339());
+        let _ = db::set_setting(&conn, "spotify_pauses", &json!(pauses).to_string());
     }
 
     /// Records the permissions Spotify actually granted (token responses list them).
@@ -322,7 +339,7 @@ impl Spotify {
         let mut attempt = 0u32;
         loop {
             attempt += 1;
-            if let Some(left) = self.cooldown_left() {
+            if let Some(left) = self.cooldown_left(path) {
                 return Err(AppError::CoolingDown(left));
             }
             let token = self.access_token().await?;
@@ -353,7 +370,7 @@ impl Spotify {
                 let text = resp.text().await.unwrap_or_default();
                 self.record_error(status.as_u16(), path, wait, &text);
                 if text.contains("QUOTA_EXCEEDED") {
-                    self.pause_for(wait);
+                    self.pause_for(path, wait);
                     let message = serde_json::from_str::<Value>(&text)
                         .ok()
                         .and_then(|v| v["error"]["message"].as_str().or(v["message"].as_str()).map(str::to_owned))
@@ -364,7 +381,7 @@ impl Spotify {
                     tokio::time::sleep(Duration::from_secs(wait + 1)).await;
                     continue;
                 }
-                self.pause_for(wait);
+                self.pause_for(path, wait);
                 return Err(AppError::RateLimited(wait));
             }
             if status.is_server_error() && attempt < 3 {
@@ -465,6 +482,16 @@ impl Spotify {
     }
 }
 
+/// An endpoint without IDs or query, e.g. `playlists/{id}/items`, so pauses apply per endpoint.
+pub fn endpoint_key(path: &str) -> String {
+    let path = path.strip_prefix(API).unwrap_or(path).trim_start_matches('/');
+    let path = path.split('?').next().unwrap_or(path);
+    path.split('/')
+        .map(|seg| if seg.len() == 22 && seg.chars().all(|c| c.is_ascii_alphanumeric()) { "{id}" } else { seg })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 fn apply_token_response(tokens: &mut Tokens, body: &Value) -> AppResult<()> {
     let access = body["access_token"]
         .as_str()
@@ -551,13 +578,21 @@ mod tests {
         let conn = crate::db::open(&dir.join("t.db")).unwrap();
         let db: crate::db::Db = Arc::new(Mutex::new(conn));
         let spotify = super::Spotify::new("test-client".into(), db);
-        assert_eq!(spotify.cooldown_left(), None);
-        spotify.pause_for(100);
-        let left = spotify.cooldown_left().unwrap();
+        assert_eq!(spotify.cooldown_left("me"), None);
+        spotify.pause_for("me", 100);
+        let left = spotify.cooldown_left("me").unwrap();
         assert!((100..=103).contains(&left), "{left}");
+        // Other endpoints aren't paused.
+        assert_eq!(spotify.cooldown_left("me/playlists?limit=50"), None);
         // Fails before any token refresh or network request.
         let err = tauri::async_runtime::block_on(spotify.me()).unwrap_err();
         assert!(matches!(err, crate::error::AppError::CoolingDown(_)), "{err}");
+        // IDs and full `next` URLs map to the same endpoint.
+        assert_eq!(super::endpoint_key("playlists/37i9dQZF1DXcBWIGoYBM5M/items?limit=50"), "playlists/{id}/items");
+        assert_eq!(
+            super::endpoint_key("https://api.spotify.com/v1/me/playlists?offset=50&limit=50"),
+            "me/playlists"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
