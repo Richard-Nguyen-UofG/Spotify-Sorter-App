@@ -140,6 +140,16 @@ CREATE TABLE IF NOT EXISTS ml_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+"#,
+// Artist genres. (Spotify's artist objects no longer include genres for Development Mode
+// apps, so this is filled from elsewhere, e.g. MusicBrainz tags.)
+r#"
+CREATE TABLE artists (
+    id         TEXT PRIMARY KEY,
+    name       TEXT,
+    genres     TEXT,          -- JSON array of genre/tag names; NULL if none were found
+    fetched_at TEXT NOT NULL
+);
 "#];
 
 pub fn open(path: &Path) -> AppResult<Connection> {

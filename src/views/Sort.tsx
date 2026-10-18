@@ -17,7 +17,9 @@ interface Props {
 
 const PACE_LABEL: Record<Pace, string> = { high: 'High', med: 'Med', low: 'Low' };
 const MOOD_LABEL: Record<Mood, string> = { positive: 'Positive', negative: 'Negative' };
-const SUGGESTABLE = new Set(['pool', 'vibe', 'exercise', 'idea']);
+// Pools are left out of the Suggested row: they're ticked automatically with a vibe, and their
+// chips crowded out vibe playlists (vibe picks among the 9 chips: 63% with pools, 71% without).
+const SUGGESTABLE = new Set(['vibe', 'exercise', 'idea']);
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
