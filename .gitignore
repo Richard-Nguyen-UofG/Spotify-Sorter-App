@@ -36,3 +36,5 @@ src-tauri/gen/schemas
 # Python audio/lyrics pipeline
 ml/.venv
 __pycache__/
+
+ml/.cache

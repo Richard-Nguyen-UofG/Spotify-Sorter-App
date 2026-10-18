@@ -2,9 +2,10 @@
 //! a hand-picked few.
 //!
 //! Suggestions come in two labelled groups, because the signals differ in strength. On the
-//! author's library, hiding 20% of a playlist and searching for it found 28% of the hidden songs
-//! in the top 40 by artist ("other songs by this artist are here") and ~20% by sound (MERT audio
-//! + lyrics; random: ~2%). So artist matches come first, then sound-alikes from other artists.
+//! author's library, hiding 20% of a vibe playlist and growing it from the rest showed ~18% of
+//! the hidden songs in the artist group ("other songs by this artist are here") and ~8.5% more
+//! in the sound group (MERT audio + lyrics + genres; 5% without genres; 45 random songs: ~2%).
+//! So artist matches come first, then sound-alikes from other artists.
 
 use std::collections::{HashMap, HashSet};
 
@@ -30,7 +31,9 @@ const TOP_K: usize = 5;
 const MAX_SEEDS: usize = 250;
 const ARTIST_RESULTS: usize = 20;
 const SOUND_RESULTS: usize = 25;
-/// Sound picks per closest seed song, so one seed can't fill the list.
+/// Fewest sound picks allowed per closest seed song, so one seed can't fill the list. With only a
+/// few seeds the cap rises to fill SOUND_RESULTS: a fixed 2 left 3 picks with just 6 sound-alikes,
+/// and the extra ones were as often right (~14% from 3 seeds, vs ~3% for random songs).
 const PER_SEED: usize = 2;
 
 /// Songs the user kept: the default search space (same as the Python reference library).
@@ -348,6 +351,7 @@ pub fn find(
     let mut out = Vec::new();
     let mut seen: HashSet<&String> = HashSet::new();
     let mut per_seed: HashMap<usize, usize> = HashMap::new();
+    let per_seed_cap = PER_SEED.max(SOUND_RESULTS.div_ceil(seed_rows.len().max(1)));
     let mut take = |list: Vec<&Scored>, limit: usize, group: &'static str, out: &mut Vec<Match>| -> AppResult<()> {
         let mut added = 0;
         for s in list {
@@ -357,7 +361,7 @@ pub fn find(
             if group == "sound" {
                 let closest = s.sound.map_or(usize::MAX, |x| x.1);
                 let used = per_seed.entry(closest).or_default();
-                if *used >= PER_SEED {
+                if *used >= per_seed_cap {
                     continue;
                 }
                 *used += 1;
