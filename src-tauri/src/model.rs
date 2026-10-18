@@ -148,6 +148,12 @@ pub struct SyncProgress {
 pub struct SyncSummary {
     pub playlists: usize,
     pub playlists_downloaded: usize,
+    /// Of those, how many were topped up with just their new songs.
+    pub playlists_topped_up: usize,
+    /// Changed playlists left for later to keep this sync within its request budget.
+    pub playlists_deferred: usize,
+    /// Estimated requests the deferred playlists need.
+    pub deferred_requests: i64,
     pub liked: usize,
     pub api_calls: i64,
 }

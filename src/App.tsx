@@ -22,6 +22,7 @@ export default function App() {
   const [mlRunning, setMlRunning] = useState(false);
   const [mlProgress, setMlProgress] = useState<SyncProgress | null>(null);
   const [mlVersion, setMlVersion] = useState(0);
+  const [deferred, setDeferred] = useState<{ count: number; requests: number } | null>(null);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -82,18 +83,21 @@ export default function App() {
   }, []);
 
   const syncRunning = useRef(false);
-  const sync = useCallback(async (force = false) => {
+  const sync = useCallback(async (force = false, allowLarge = false) => {
     if (syncRunning.current) return;
     syncRunning.current = true;
     setSyncing(true);
     setError(null);
     try {
-      const s = await api.sync(force);
+      const s = await api.sync(force, allowLarge);
       await loadData();
+      const full = s.playlistsDownloaded - s.playlistsToppedUp;
       setNotice(
-        `Synced: ${s.playlistsDownloaded} playlist${s.playlistsDownloaded === 1 ? '' : 's'} downloaded, ` +
-        `${s.liked} liked songs, ${s.apiCalls} API calls.`,
+        `Synced: ${full} playlist${full === 1 ? '' : 's'} downloaded` +
+        (s.playlistsToppedUp ? `, ${s.playlistsToppedUp} topped up with new songs` : '') +
+        `, ${s.liked} liked songs, ${s.apiCalls} API calls.`,
       );
+      setDeferred(s.playlistsDeferred ? { count: s.playlistsDeferred, requests: s.deferredRequests } : null);
       void runMl();
     } catch (e) {
       reportError(e);
@@ -205,6 +209,15 @@ export default function App() {
         <div className="banner info">
           <span>{notice}</span>
           <button className="ghost small" onClick={() => setNotice(null)}>Dismiss</button>
+        </div>
+      )}
+      {deferred && !syncing && (
+        <div className="banner warn">
+          <span>
+            {deferred.count} changed playlist{deferred.count === 1 ? ' was' : 's were'} left for later to keep this sync
+            small (about {deferred.requests} more Spotify requests). The next syncs will catch up, or download them now.
+          </span>
+          <button className="small" onClick={() => void sync(false, true)}>Download now</button>
         </div>
       )}
       {status.missingScopes.length > 0 && (

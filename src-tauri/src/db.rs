@@ -180,6 +180,13 @@ CREATE TABLE suggestion_log (
     reverted       INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_suggestion_log_track ON suggestion_log(track_id);
+"#,
+// Song positions and how many items a playlist had when last downloaded, so a playlist that only
+// grew at the end can be topped up instead of re-downloaded in full.
+r#"
+ALTER TABLE playlist_tracks ADD COLUMN position INTEGER;
+ALTER TABLE playlists ADD COLUMN synced_total INTEGER;
+ALTER TABLE playlists ADD COLUMN full_synced_at TEXT;
 "#];
 
 pub fn open(path: &Path) -> AppResult<Connection> {

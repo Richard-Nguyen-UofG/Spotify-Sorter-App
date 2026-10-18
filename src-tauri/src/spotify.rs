@@ -614,7 +614,9 @@ mod tests {
         let spotify = super::Spotify::new(client_id, db);
         tauri::async_runtime::block_on(async {
             let token = spotify.access_token().await.expect("token refresh (accounts service, not the API quota)");
-            let resp = spotify.http.get(format!("{}/me", super::API)).bearer_auth(token).send().await.unwrap();
+            let endpoint = std::env::var("ENDPOINT").unwrap_or_else(|_| "me".into());
+            println!("endpoint: {endpoint}");
+            let resp = spotify.http.get(format!("{}/{}", super::API, endpoint)).bearer_auth(token).send().await.unwrap();
             println!("status: {}", resp.status());
             for h in ["retry-after", "content-type"] {
                 println!("{h}: {:?}", resp.headers().get(h));

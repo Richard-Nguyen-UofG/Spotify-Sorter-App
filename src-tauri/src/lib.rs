@@ -151,8 +151,13 @@ async fn logout(state: State<'_, AppState>) -> AppResult<()> {
 }
 
 #[tauri::command]
-async fn sync_library(app: AppHandle, state: State<'_, AppState>, force: bool) -> AppResult<SyncSummary> {
-    sync::sync_library(&app, &state.db, &state.spotify, force).await
+async fn sync_library(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    force: bool,
+    allow_large: bool,
+) -> AppResult<SyncSummary> {
+    sync::sync_library(&app, &state.db, &state.spotify, force, allow_large).await
 }
 
 /// Analyses new songs' audio and lyrics, retrains, and rescores Liked Songs.

@@ -83,7 +83,16 @@ export interface Match {
 }
 
 export interface SyncProgress { message: string; done: number; total: number }
-export interface SyncSummary { playlists: number; playlistsDownloaded: number; liked: number; apiCalls: number }
+export interface SyncSummary {
+  playlists: number;
+  playlistsDownloaded: number;
+  playlistsToppedUp: number;
+  /** Changed playlists left for a later sync to stay within the request budget. */
+  playlistsDeferred: number;
+  deferredRequests: number;
+  liked: number;
+  apiCalls: number;
+}
 export interface CommitSummary { songs: number; additions: number; unliked: number }
 
 export const api = {
@@ -92,7 +101,8 @@ export const api = {
   login: () => invoke<void>('login'),
   cancelLogin: () => invoke<void>('cancel_login'),
   logout: () => invoke<void>('logout'),
-  sync: (force = false) => invoke<SyncSummary>('sync_library', { force }),
+  /** `allowLarge` downloads every changed playlist now instead of staying within the request budget. */
+  sync: (force = false, allowLarge = false) => invoke<SyncSummary>('sync_library', { force, allowLarge }),
   runMl: () => invoke<void>('run_ml'),
   playlists: () => invoke<Playlist[]>('get_playlists'),
   updatePlaylist: ({ id, kind, mood, pace, description }: Pick<Playlist, 'id' | 'kind' | 'mood' | 'pace' | 'description'>) =>
