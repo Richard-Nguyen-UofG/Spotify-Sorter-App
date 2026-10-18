@@ -67,6 +67,8 @@ export interface Status {
   mlSongs: number;
   /** Real-use accuracy of the Suggested vibes row on committed songs where a vibe was picked. */
   suggestionStats: { songs: number; top1: number; top3: number; top9: number };
+  missingScopes: string[];
+  cooldownSecs: number | null;
 }
 
 /** A library song found by an Explore search. */

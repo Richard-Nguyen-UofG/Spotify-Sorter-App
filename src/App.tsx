@@ -119,8 +119,16 @@ export default function App() {
   const ready = !!status?.loggedIn && !!status.hasClientId;
   useEffect(() => {
     if (!ready) return;
-    // Show what's cached right away, then catch up with Spotify.
-    void loadData().catch(reportError).then(() => sync(false));
+    // Show what's cached right away, then catch up with Spotify (unless it asked for a pause:
+    // a request during the pause would restart its timer).
+    void loadData().catch(reportError).then(async () => {
+      const s = await api.status().catch(() => null);
+      if (s?.cooldownSecs) {
+        setNotice(`Spotify asked for a pause; syncing is held for another ${s.cooldownSecs} s.`);
+        return;
+      }
+      await sync(false);
+    });
   }, [ready, loadData, sync, reportError]);
 
   const unsortedCount = useMemo(
@@ -197,6 +205,15 @@ export default function App() {
         <div className="banner info">
           <span>{notice}</span>
           <button className="ghost small" onClick={() => setNotice(null)}>Dismiss</button>
+        </div>
+      )}
+      {status.missingScopes.length > 0 && (
+        <div className="banner warn">
+          <span>
+            Spotify hasn't granted all the permissions this version needs ({status.missingScopes.join(', ')}).
+            Reconnect once to approve them; your data stays as it is.
+          </span>
+          <button className="small" onClick={logout}>Reconnect</button>
         </div>
       )}
       {tab === 'sort' && unsortedCount > 0 && (

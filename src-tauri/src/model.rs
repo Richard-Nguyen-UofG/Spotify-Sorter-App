@@ -187,4 +187,8 @@ pub struct Status {
     /// Songs with an audio embedding (Explore works once this is non-zero).
     pub ml_songs: i64,
     pub suggestion_stats: SuggestionStats,
+    /// Permissions the app asks for that Spotify hasn't granted (reconnect to fix).
+    pub missing_scopes: Vec<String>,
+    /// Seconds left of a pause Spotify asked for; nothing is sent until then.
+    pub cooldown_secs: Option<u64>,
 }

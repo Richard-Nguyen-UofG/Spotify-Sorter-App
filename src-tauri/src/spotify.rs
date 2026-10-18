@@ -27,7 +27,7 @@ const AUTHORIZE_URL: &str = "https://accounts.spotify.com/authorize";
 const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 pub const REDIRECT_PORT: u16 = 8898;
 pub const REDIRECT_URI: &str = "http://127.0.0.1:8898/callback";
-const SCOPES: &str = "playlist-read-private playlist-read-collaborative playlist-modify-public \
+pub const SCOPES: &str = "playlist-read-private playlist-read-collaborative playlist-modify-public \
 playlist-modify-private user-library-read user-library-modify user-read-recently-played";
 
 /// Minimum gap between requests. Spotify's limit is a rolling 30s window; this keeps bursts
@@ -187,6 +187,7 @@ impl Spotify {
                 body["error_description"].as_str().unwrap_or("unknown error")
             )));
         }
+        self.record_scopes(&body);
         let mut tokens = self.tokens.lock().await;
         apply_token_response(&mut tokens, &body)
     }
@@ -244,6 +245,7 @@ impl Spotify {
             }
             return Err(AppError::msg(format!("Token refresh failed ({status}): {body}")));
         }
+        self.record_scopes(&body);
         apply_token_response(tokens, &body)
     }
 
@@ -257,6 +259,31 @@ impl Spotify {
             tokio::time::sleep(next - now).await;
         }
         *last = Instant::now();
+    }
+
+    /// Seconds left of a pause Spotify asked for (stored, so it also holds across restarts).
+    pub fn cooldown_left(&self) -> Option<u64> {
+        let conn = db::lock(&self.db);
+        let until = db::get_setting(&conn, "spotify_paused_until").ok().flatten()?;
+        let until = chrono::DateTime::parse_from_rfc3339(&until).ok()?;
+        let left = (until.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds();
+        (left > 0).then_some(left as u64)
+    }
+
+    /// Spotify's QUOTA_EXCEEDED cooldown restarts if anything is sent before it ends, so nothing
+    /// is sent until it has passed (plus a small margin).
+    fn pause_for(&self, secs: u64) {
+        let until = chrono::Utc::now() + chrono::Duration::seconds(secs as i64 + 3);
+        let conn = db::lock(&self.db);
+        let _ = db::set_setting(&conn, "spotify_paused_until", &until.to_rfc3339());
+    }
+
+    /// Records the permissions Spotify actually granted (token responses list them).
+    fn record_scopes(&self, body: &Value) {
+        if let Some(scope) = body["scope"].as_str() {
+            let conn = db::lock(&self.db);
+            let _ = db::set_setting(&conn, "granted_scopes", scope);
+        }
     }
 
     /// Keeps the raw details of the latest rate-limit/quota response (settings key
@@ -295,6 +322,9 @@ impl Spotify {
         let mut attempt = 0u32;
         loop {
             attempt += 1;
+            if let Some(left) = self.cooldown_left() {
+                return Err(AppError::CoolingDown(left));
+            }
             let token = self.access_token().await?;
             self.pace().await;
             let mut req = self.http.request(method.clone(), &url).bearer_auth(&token);
@@ -323,6 +353,7 @@ impl Spotify {
                 let text = resp.text().await.unwrap_or_default();
                 self.record_error(status.as_u16(), path, wait, &text);
                 if text.contains("QUOTA_EXCEEDED") {
+                    self.pause_for(wait);
                     let message = serde_json::from_str::<Value>(&text)
                         .ok()
                         .and_then(|v| v["error"]["message"].as_str().or(v["message"].as_str()).map(str::to_owned))
@@ -333,6 +364,7 @@ impl Spotify {
                     tokio::time::sleep(Duration::from_secs(wait + 1)).await;
                     continue;
                 }
+                self.pause_for(wait);
                 return Err(AppError::RateLimited(wait));
             }
             if status.is_server_error() && attempt < 3 {
@@ -511,6 +543,24 @@ async fn wait_for_callback(listener: TcpListener) -> AppResult<HashMap<String, S
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_requested_pause_blocks_requests_without_sending() {
+        use std::sync::{Arc, Mutex};
+        let dir = std::env::temp_dir().join(format!("sorter-pause-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = crate::db::open(&dir.join("t.db")).unwrap();
+        let db: crate::db::Db = Arc::new(Mutex::new(conn));
+        let spotify = super::Spotify::new("test-client".into(), db);
+        assert_eq!(spotify.cooldown_left(), None);
+        spotify.pause_for(100);
+        let left = spotify.cooldown_left().unwrap();
+        assert!((100..=103).contains(&left), "{left}");
+        // Fails before any token refresh or network request.
+        let err = tauri::async_runtime::block_on(spotify.me()).unwrap_err();
+        assert!(matches!(err, crate::error::AppError::CoolingDown(_)), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// One raw request against the real account, printing Spotify's exact response.
     /// `cargo test --release raw_me_response -- --ignored --nocapture`
     #[test]

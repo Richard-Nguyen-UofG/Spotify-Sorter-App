@@ -62,6 +62,7 @@ const KINDS: &[&str] = &[
 async fn status(state: State<'_, AppState>) -> AppResult<Status> {
     let logged_in = state.spotify.has_login().await;
     let ml_available = ml::available(&state.db);
+    let cooldown_secs = state.spotify.cooldown_left();
     let conn = db::lock(&state.db);
     let ml_trained_at: Option<String> = conn
         .query_row("SELECT value FROM ml_meta WHERE key = 'trained_at'", [], |r| r.get(0))
@@ -72,6 +73,19 @@ async fn status(state: State<'_, AppState>) -> AppResult<Status> {
     Ok(Status {
         ml_songs,
         suggestion_stats: sorting::suggestion_stats(&conn)?,
+        missing_scopes: match db::get_setting(&conn, "granted_scopes")? {
+            // Unknown until the next token refresh records it.
+            None => Vec::new(),
+            Some(granted) => {
+                let granted: Vec<&str> = granted.split_whitespace().collect();
+                spotify::SCOPES
+                    .split_whitespace()
+                    .filter(|s| !granted.contains(s))
+                    .map(str::to_owned)
+                    .collect()
+            }
+        },
+        cooldown_secs,
         ml_available,
         ml_running: ml::is_running(),
         ml_trained_at,

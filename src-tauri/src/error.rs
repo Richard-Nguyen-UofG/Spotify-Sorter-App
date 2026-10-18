@@ -10,6 +10,9 @@ pub enum AppError {
     /// message only repeats what Spotify said.
     #[error("Spotify says this developer account is over its request quota (QUOTA_EXCEEDED); it asked to wait about {wait_secs} s. Spotify's message: {message}")]
     QuotaExceeded { wait_secs: u64, message: String },
+    /// Refused locally: Spotify asked for a pause, and any request during it restarts the timer.
+    #[error("Spotify asked the app to pause; it will send nothing for another {0} s (requests during the pause restart Spotify's timer).")]
+    CoolingDown(u64),
     #[error("Spotify API error {status} on {endpoint}: {body}")]
     Api {
         status: u16,
