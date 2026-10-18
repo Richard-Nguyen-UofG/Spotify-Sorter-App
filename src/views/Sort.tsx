@@ -17,9 +17,11 @@ interface Props {
 
 const PACE_LABEL: Record<Pace, string> = { high: 'High', med: 'Med', low: 'Low' };
 const MOOD_LABEL: Record<Mood, string> = { positive: 'Positive', negative: 'Negative' };
-// Pools are left out of the Suggested row: they're ticked automatically with a vibe, and their
-// chips crowded out vibe playlists (vibe picks among the 9 chips: 63% with pools, 71% without).
-const SUGGESTABLE = new Set(['vibe', 'exercise', 'idea']);
+// The Suggested row is vibe playlists only. Pools are ticked automatically with a vibe, exercise
+// playlists have their own row and are easy to pick by hand, and Random Ideas are too loose to
+// suggest; their chips only crowded out vibes. On a rolling quarterly hold-out, the share of the
+// user's vibe picks among the 9 chips went 63% (all kinds) → 71% (no pools) → 77% (vibes only).
+const SUGGESTABLE = new Set(['vibe']);
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
@@ -283,10 +285,10 @@ export default function Sort({ playlists, queue, canRevert, refreshKey, onChange
             </div>
 
             <div className="row">
-              <span className="label">Suggested</span>
+              <span className="label">Suggested vibes</span>
               <div className="chips">
                 {suggestions.length === 0 && (
-                  <span className="muted small">No history for this artist yet. Pick a mood and pace below.</span>
+                  <span className="muted small">No suggestions for this song yet. Pick a mood and pace below.</span>
                 )}
                 {suggestions.map((s, i) => chip(byId.get(s.playlistId), { num: i + 1, hint: s.reasons.join(' · ') }))}
               </div>
