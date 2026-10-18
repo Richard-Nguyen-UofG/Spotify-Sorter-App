@@ -103,5 +103,5 @@ after which the app asks you to log in again.
 
 ## Legacy web app
 
-The original Vite web app (Analyzer, Harmonic Flow, Deep Cuts, Musicae acoustic data) lives in
-[`legacy/`](legacy/). Run it with `npm install && npm run dev` inside that folder.
+The original Vite web app (Analyzer, Harmonic Flow, Deep Cuts, Musicae acoustic data) was removed;
+it's in git history at commit `67a80b5` (`git checkout 67a80b5 -- legacy` restores it).
