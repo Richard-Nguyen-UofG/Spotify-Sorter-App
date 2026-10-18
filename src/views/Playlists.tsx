@@ -25,9 +25,11 @@ interface Props {
   playlists: Playlist[];
   onSaved: (playlists: Playlist[]) => void;
   onError: (e: unknown) => void;
+  /** A playlist's category, mood or pace changed, so sound-alike scores need recomputing. */
+  onCategoriesChanged: () => void;
 }
 
-export default function Playlists({ playlists, onSaved, onError }: Props) {
+export default function Playlists({ playlists, onSaved, onError, onCategoriesChanged }: Props) {
   const [filter, setFilter] = useState('');
 
   const groups = useMemo(() => {
@@ -45,6 +47,7 @@ export default function Playlists({ playlists, onSaved, onError }: Props) {
     onSaved(playlists.map((x) => (x.id === p.id ? next : x)));
     try {
       await api.updatePlaylist(next);
+      if (next.kind !== p.kind || next.mood !== p.mood || next.pace !== p.pace) onCategoriesChanged();
     } catch (e) {
       onError(e);
       onSaved(playlists);
@@ -56,6 +59,7 @@ export default function Playlists({ playlists, onSaved, onError }: Props) {
     onSaved(playlists.map((p) => (p.kind === 'unsorted' ? { ...p, kind: 'archive', mood: null, pace: null } : p)));
     try {
       for (const p of unsorted) await api.updatePlaylist({ ...p, kind: 'archive', mood: null, pace: null });
+      if (unsorted.length) onCategoriesChanged();
     } catch (e) {
       onError(e);
     }

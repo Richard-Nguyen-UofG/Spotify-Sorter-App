@@ -69,6 +69,9 @@ MIN_MEMBERS = 5
 # catalogues grow (new releases often get lyrics weeks later).
 RECHECK_AFTER_DAYS = 90
 RECHECK_PER_RUN = 25
+# Lookups that failed (network trouble, server busy) are retried at most once a day, since an
+# analysis can run several times a day (after each sync and after playlist category edits).
+RETRY_ERRORS_AFTER_HOURS = 24
 
 SR = 24000  # MERT's sample rate
 
@@ -196,6 +199,12 @@ def load_tracks(db, ids):
         if row:
             out[tid] = dict(zip(("id", "name", "isrc", "duration_ms", "album", "artist"), row))
     return out
+
+
+def due_for_retry(db, table):
+    """Track IDs whose last lookup failed more than RETRY_ERRORS_AFTER_HOURS ago."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=RETRY_ERRORS_AFTER_HOURS)).isoformat()
+    return {tid for (tid,) in db.execute(f"SELECT track_id FROM {table} WHERE status = 'error' AND updated_at < ?", (cutoff,))}
 
 
 def stale_misses(db, table, status, ids):
@@ -354,7 +363,8 @@ def fill_audio(db, ids):
         db.execute("UPDATE ml_audio SET status = 'stale' WHERE status = 'ok'")
         set_meta(db, "audio_model", AUDIO_VERSION)
     have = {r[0]: r[1] for r in db.execute("SELECT track_id, status FROM ml_audio")}
-    pending = [tid for tid in ids if have.get(tid) in (None, "error", "stale")]
+    retry = due_for_retry(db, "ml_audio")
+    pending = [tid for tid in ids if have.get(tid) in (None, "stale") or tid in retry]
     pending += stale_misses(db, "ml_audio", "no_preview", ids)
     if not pending:
         return
@@ -447,7 +457,8 @@ class TextEmbedder:
 
 def fill_lyrics(db, ids):
     have = {r[0]: r[1] for r in db.execute("SELECT track_id, status FROM ml_lyrics")}
-    pending = [tid for tid in ids if have.get(tid) in (None, "error")]
+    retry = due_for_retry(db, "ml_lyrics")
+    pending = [tid for tid in ids if have.get(tid) is None or tid in retry]
     pending += stale_misses(db, "ml_lyrics", "missing", ids)
     if not pending:
         return

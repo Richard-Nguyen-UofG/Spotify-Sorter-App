@@ -43,9 +43,16 @@ export default function App() {
   }, [refreshStatus]);
 
   // Audio/lyrics analysis of new songs; runs after each sync when ml/ is set up.
+  // A change made while an analysis is running gets its own run once that one finishes.
+  const mlRerun = useRef(false);
+  const runMlRef = useRef<() => Promise<void>>(async () => {});
   const runMl = useCallback(async () => {
     const s = await api.status().catch(() => null);
-    if (!s?.mlAvailable || s.mlRunning) return;
+    if (!s?.mlAvailable) return;
+    if (s.mlRunning) {
+      mlRerun.current = true;
+      return;
+    }
     setMlRunning(true);
     try {
       await api.runMl();
@@ -56,8 +63,23 @@ export default function App() {
       setMlRunning(false);
       setMlProgress(null);
       void refreshStatus();
+      if (mlRerun.current) {
+        mlRerun.current = false;
+        setTimeout(() => void runMlRef.current(), 1000);
+      }
     }
   }, [refreshStatus, reportError]);
+  runMlRef.current = runMl;
+
+  // Category edits come in bursts; recompute sound-alike scores once, shortly after the last one.
+  const categoryTimer = useRef<number | null>(null);
+  const onCategoriesChanged = useCallback(() => {
+    if (categoryTimer.current) clearTimeout(categoryTimer.current);
+    categoryTimer.current = window.setTimeout(() => {
+      categoryTimer.current = null;
+      void runMlRef.current();
+    }, 4000);
+  }, []);
 
   const syncRunning = useRef(false);
   const sync = useCallback(async (force = false) => {
@@ -207,7 +229,8 @@ export default function App() {
             onNotice={setNotice}
           />
         ) : (
-          <Playlists playlists={playlists} onSaved={setPlaylists} onError={reportError} />
+          <Playlists playlists={playlists} onSaved={setPlaylists} onError={reportError}
+            onCategoriesChanged={onCategoriesChanged} />
         )}
       </main>
     </div>
