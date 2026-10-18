@@ -160,6 +160,17 @@ pub struct CommitSummary {
     pub unliked: usize,
 }
 
+/// Real-use accuracy of the Suggested vibes row: committed songs where a vibe playlist was picked,
+/// and how many of them had a pick as the first suggestion, in the top 3, and among the 9.
+#[derive(Debug, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SuggestionStats {
+    pub songs: i64,
+    pub top1: i64,
+    pub top3: i64,
+    pub top9: i64,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
@@ -175,4 +186,5 @@ pub struct Status {
     pub ml_trained_at: Option<String>,
     /// Songs with an audio embedding (Explore works once this is non-zero).
     pub ml_songs: i64,
+    pub suggestion_stats: SuggestionStats,
 }

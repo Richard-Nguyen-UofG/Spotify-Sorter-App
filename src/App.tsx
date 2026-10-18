@@ -215,6 +215,7 @@ export default function App() {
             playlists={playlists}
             queue={queue}
             canRevert={status.canRevert}
+            stats={status.suggestionStats}
             refreshKey={mlVersion}
             onChanged={async () => { await loadData(); await refreshStatus(); }}
             onError={reportError}

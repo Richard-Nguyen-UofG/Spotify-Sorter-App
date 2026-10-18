@@ -65,6 +65,8 @@ export interface Status {
   mlRunning: boolean;
   mlTrainedAt: string | null;
   mlSongs: number;
+  /** Real-use accuracy of the Suggested vibes row on committed songs where a vibe was picked. */
+  suggestionStats: { songs: number; top1: number; top3: number; top9: number };
 }
 
 /** A library song found by an Explore search. */
@@ -95,8 +97,9 @@ export const api = {
     invoke<void>('update_playlist', { id, kind, mood, pace, description }),
   queue: () => invoke<QueueItem[]>('get_queue'),
   context: (trackId: string) => invoke<TrackContext>('get_track_context', { trackId }),
-  stage: (trackId: string, playlistIds: string[], unlike: boolean) =>
-    invoke<void>('stage', { trackId, playlistIds, unlike }),
+  /** `shown`: the Suggested vibes in order, logged next to the picks to measure real-use accuracy. */
+  stage: (trackId: string, playlistIds: string[], unlike: boolean, shown: string[], audioAnalysed: boolean) =>
+    invoke<void>('stage', { trackId, playlistIds, unlike, shown, audioAnalysed }),
   unstage: (trackId: string) => invoke<void>('unstage', { trackId }),
   commit: () => invoke<CommitSummary>('commit'),
   revertLastCommit: () => invoke<CommitSummary>('revert_last_commit'),

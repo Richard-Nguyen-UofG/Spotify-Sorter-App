@@ -165,6 +165,21 @@ CREATE TABLE playlist_removals (
     detected_at TEXT NOT NULL,
     PRIMARY KEY (playlist_id, track_id, detected_at)
 );
+"#,
+// What the Suggested vibes row showed (best first) next to what was picked, per staged song;
+// commit_id is set when the decision is committed, so real-use accuracy can be measured.
+r#"
+CREATE TABLE suggestion_log (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id       TEXT NOT NULL,
+    shown          TEXT NOT NULL,
+    picked         TEXT NOT NULL,
+    audio_analysed INTEGER NOT NULL,
+    staged_at      TEXT NOT NULL,
+    commit_id      INTEGER,
+    reverted       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_suggestion_log_track ON suggestion_log(track_id);
 "#];
 
 pub fn open(path: &Path) -> AppResult<Connection> {

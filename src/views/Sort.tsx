@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
-import { api, errorText, type Mood, type Pace, type Playlist, type QueueItem, type TrackContext } from '../api';
+import { api, errorText, type Mood, type Pace, type Playlist, type QueueItem, type Status, type TrackContext } from '../api';
 import {
   autoIds, cellKey, cellScores, emptySelection, finalIds, fromStaged, MOODS, PACES, toggle, type Selection,
 } from '../filing';
@@ -8,6 +8,7 @@ interface Props {
   playlists: Playlist[];
   queue: QueueItem[];
   canRevert: boolean;
+  stats: Status['suggestionStats'];
   /** Bumped when the audio model rescored songs, so suggestions reload. */
   refreshKey: number;
   onChanged: () => Promise<void>;
@@ -31,7 +32,7 @@ function isTyping(target: EventTarget | null) {
   return target instanceof HTMLElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
 }
 
-export default function Sort({ playlists, queue, canRevert, refreshKey, onChanged, onError, onNotice }: Props) {
+export default function Sort({ playlists, queue, canRevert, stats, refreshKey, onChanged, onError, onNotice }: Props) {
   const byId = useMemo(() => new Map(playlists.map((p) => [p.id, p])), [playlists]);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const current = queue.find((q) => q.track.id === currentId) ?? queue.find((q) => !q.staged) ?? queue[0] ?? null;
@@ -94,13 +95,13 @@ export default function Sort({ playlists, queue, canRevert, refreshKey, onChange
   const stageAndNext = useCallback(async () => {
     if (!current || !ctx) return;
     try {
-      await api.stage(current.track.id, [...final], unlike);
+      await api.stage(current.track.id, [...final], unlike, suggestions.map((s) => s.playlistId), ctx.audioAnalysed);
       goTo(1, true);
       await onChanged();
     } catch (e) {
       onError(e);
     }
-  }, [current, ctx, final, unlike, goTo, onChanged, onError]);
+  }, [current, ctx, final, unlike, suggestions, goTo, onChanged, onError]);
 
   const unstageCurrent = async () => {
     if (!current) return;
@@ -375,6 +376,11 @@ export default function Sort({ playlists, queue, canRevert, refreshKey, onChange
           <strong>{stagedCount}</strong> song{stagedCount === 1 ? '' : 's'} staged
           <span className="muted small"> · nothing changes in Spotify until you commit</span>
         </span>
+        {stats.songs > 0 && (
+          <span className="muted small" title="How the Suggested vibes row has done on songs you've committed (when you picked a vibe playlist)">
+            Suggestions so far: top pick {stats.top1}/{stats.songs} · top 3 {stats.top3}/{stats.songs} · among 9 {stats.top9}/{stats.songs}
+          </span>
+        )}
         <div className="spacer" />
         {canRevert && (
           <button className="ghost" onClick={revert} disabled={busy}>

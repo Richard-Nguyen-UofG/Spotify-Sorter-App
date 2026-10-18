@@ -8,7 +8,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::db::{self, Db};
 use crate::error::{AppError, AppResult};
-use crate::model::{CommitSummary, DatedTarget, QueueItem, Suggestion, TrackContext};
+use crate::model::{CommitSummary, DatedTarget, QueueItem, Suggestion, SuggestionStats, TrackContext};
 use crate::spotify::Spotify;
 
 /// Playlist kinds that reflect a real judgment about the song (as opposed to the defaults).
@@ -245,24 +245,67 @@ fn artist_history(conn: &Connection, track_id: &str) -> AppResult<Vec<Suggestion
     Ok(suggestions)
 }
 
-pub fn stage(conn: &Connection, track_id: &str, playlist_ids: &[String], unlike: bool) -> AppResult<()> {
+/// Stages a decision, and logs which vibe playlists were suggested (`shown`, best first) next to
+/// what was picked, so real-use accuracy can be measured once the decision is committed.
+pub fn stage(
+    conn: &Connection,
+    track_id: &str,
+    playlist_ids: &[String],
+    unlike: bool,
+    shown: &[String],
+    audio_analysed: bool,
+) -> AppResult<()> {
+    let now = Local::now().to_rfc3339();
     conn.execute(
         "INSERT INTO staged (track_id, playlist_ids, unlike, staged_at) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(track_id) DO UPDATE SET
             playlist_ids = excluded.playlist_ids, unlike = excluded.unlike, staged_at = excluded.staged_at",
-        params![
-            track_id,
-            serde_json::to_string(playlist_ids)?,
-            unlike,
-            Local::now().to_rfc3339()
-        ],
+        params![track_id, serde_json::to_string(playlist_ids)?, unlike, now],
+    )?;
+    conn.execute("DELETE FROM suggestion_log WHERE track_id = ?1 AND commit_id IS NULL", [track_id])?;
+    conn.execute(
+        "INSERT INTO suggestion_log (track_id, shown, picked, audio_analysed, staged_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![track_id, serde_json::to_string(shown)?, serde_json::to_string(playlist_ids)?, audio_analysed, now],
     )?;
     Ok(())
 }
 
 pub fn unstage(conn: &Connection, track_id: &str) -> AppResult<()> {
     conn.execute("DELETE FROM staged WHERE track_id = ?1", [track_id])?;
+    conn.execute("DELETE FROM suggestion_log WHERE track_id = ?1 AND commit_id IS NULL", [track_id])?;
     Ok(())
+}
+
+/// How the Suggested vibes row did on real, committed decisions (vibe picks only).
+pub fn suggestion_stats(conn: &Connection) -> AppResult<SuggestionStats> {
+    let vibes: HashSet<String> = {
+        let mut stmt = conn.prepare("SELECT id FROM playlists WHERE kind = 'vibe'")?;
+        let rows = stmt.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        rows
+    };
+    let mut stats = SuggestionStats::default();
+    let mut stmt = conn.prepare(
+        "SELECT shown, picked FROM suggestion_log WHERE commit_id IS NOT NULL AND reverted = 0",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    for row in rows {
+        let (shown, picked) = row?;
+        let shown: Vec<String> = serde_json::from_str(&shown).unwrap_or_default();
+        let picked: HashSet<String> = serde_json::from_str::<Vec<String>>(&picked)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| vibes.contains(p))
+            .collect();
+        if picked.is_empty() {
+            continue; // no vibe playlist picked: nothing the Suggested row could get right
+        }
+        stats.songs += 1;
+        let hit = |n: usize| shown.iter().take(n).any(|p| picked.contains(p));
+        stats.top1 += hit(1) as i64;
+        stats.top3 += hit(3) as i64;
+        stats.top9 += hit(9) as i64;
+    }
+    Ok(stats)
 }
 
 pub fn can_revert(conn: &Connection) -> AppResult<bool> {
@@ -433,6 +476,10 @@ pub async fn commit(db: &Db, spotify: &Spotify) -> AppResult<CommitSummary> {
             }
             if fully_added(row) && (!row.unlike || row_unliked) {
                 conn.execute("DELETE FROM staged WHERE track_id = ?1", [&row.track_id])?;
+                conn.execute(
+                    "UPDATE suggestion_log SET commit_id = ?1 WHERE track_id = ?2 AND commit_id IS NULL",
+                    params![commit_id, row.track_id],
+                )?;
                 songs += 1;
             }
         }
@@ -528,6 +575,11 @@ pub async fn revert_last_commit(db: &Db, spotify: &Spotify) -> AppResult<CommitS
     let conn = db::lock(db);
     for f in &filings {
         conn.execute("UPDATE filings SET reverted = 1 WHERE id = ?1", [f.id])?;
+        conn.execute(
+            "UPDATE suggestion_log SET reverted = 1
+             WHERE track_id = ?1 AND commit_id = (SELECT commit_id FROM filings WHERE id = ?2)",
+            params![f.track_id, f.id],
+        )?;
     }
     Ok(CommitSummary {
         songs: filings.len(),
@@ -636,6 +688,34 @@ pub async fn create_playlist(db: &Db, spotify: &Spotify, name: &str, track_ids: 
 #[cfg(test)]
 mod tests {
     use super::semester_name;
+
+    #[test]
+    fn suggestion_stats_count_committed_vibe_picks() {
+        let dir = std::env::temp_dir().join(format!("sorter-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = crate::db::open(&dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO playlists (id, name, kind) VALUES ('v1','a','vibe'), ('v2','b','vibe'), ('v3','c','vibe'), ('p','pool','pool');",
+        )
+        .unwrap();
+        let log = |track: &str, shown: &str, picked: &str, commit: Option<i64>, reverted: i64| {
+            conn.execute(
+                "INSERT INTO suggestion_log (track_id, shown, picked, audio_analysed, staged_at, commit_id, reverted)
+                 VALUES (?1, ?2, ?3, 1, 'now', ?4, ?5)",
+                rusqlite::params![track, shown, picked, commit, reverted],
+            )
+            .unwrap();
+        };
+        log("t1", r#"["v1","v2","v3"]"#, r#"["v1","p"]"#, Some(1), 0); // top pick
+        log("t2", r#"["v1","v2","v3"]"#, r#"["v3"]"#, Some(1), 0); // 3rd
+        log("t3", r#"["v1","v2"]"#, r#"["p"]"#, Some(1), 0); // no vibe picked: ignored
+        log("t4", r#"["v1"]"#, r#"["v1"]"#, None, 0); // staged, not committed: ignored
+        log("t5", r#"["v1"]"#, r#"["v1"]"#, Some(2), 1); // reverted: ignored
+        let st = super::suggestion_stats(&conn).unwrap();
+        assert_eq!((st.songs, st.top1, st.top3, st.top9), (2, 1, 2, 2));
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use chrono::{Local, TimeZone};
 
     #[test]

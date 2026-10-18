@@ -71,6 +71,7 @@ async fn status(state: State<'_, AppState>) -> AppResult<Status> {
         conn.query_row("SELECT COUNT(*) FROM ml_audio WHERE status = 'ok'", [], |r| r.get(0))?;
     Ok(Status {
         ml_songs,
+        suggestion_stats: sorting::suggestion_stats(&conn)?,
         ml_available,
         ml_running: ml::is_running(),
         ml_trained_at,
@@ -249,8 +250,15 @@ fn get_track_context(state: State<'_, AppState>, track_id: String) -> AppResult<
 }
 
 #[tauri::command]
-fn stage(state: State<'_, AppState>, track_id: String, playlist_ids: Vec<String>, unlike: bool) -> AppResult<()> {
-    sorting::stage(&db::lock(&state.db), &track_id, &playlist_ids, unlike)
+fn stage(
+    state: State<'_, AppState>,
+    track_id: String,
+    playlist_ids: Vec<String>,
+    unlike: bool,
+    shown: Vec<String>,
+    audio_analysed: bool,
+) -> AppResult<()> {
+    sorting::stage(&db::lock(&state.db), &track_id, &playlist_ids, unlike, &shown, audio_analysed)
 }
 
 #[tauri::command]
