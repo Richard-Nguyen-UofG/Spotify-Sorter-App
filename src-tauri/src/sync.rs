@@ -4,6 +4,8 @@
 //! we last synced, and commits made by this app update the stored snapshot themselves, so a
 //! typical weekly sync costs a handful of requests.
 
+use std::collections::{HashMap, HashSet};
+
 use rusqlite::params;
 use tauri::{AppHandle, Emitter};
 
@@ -136,13 +138,33 @@ pub async fn sync_library(app: &AppHandle, db: &Db, spotify: &Spotify, force: bo
             .await?;
         let mut conn = db::lock(db);
         let tx = conn.transaction()?;
+        // Songs present before this sync, to spot the ones the user pruned.
+        let before: HashMap<String, Option<String>> = {
+            let mut stmt = tx.prepare("SELECT track_id, added_at FROM playlist_tracks WHERE playlist_id = ?1")?;
+            let rows = stmt
+                .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<Result<_, _>>()?;
+            rows
+        };
         tx.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", [id])?;
+        let mut now_in: HashSet<String> = HashSet::new();
         for entry in &entries {
             if let Some((track, added_at)) = parse_playlist_entry(entry) {
                 db::upsert_track(&tx, &track)?;
                 tx.execute(
                     "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, added_at) VALUES (?1, ?2, ?3)",
                     params![id, track.id, added_at],
+                )?;
+                now_in.insert(track.id);
+            }
+        }
+        let detected = chrono::Utc::now().to_rfc3339();
+        for (track_id, added_at) in &before {
+            if !now_in.contains(track_id) {
+                tx.execute(
+                    "INSERT OR IGNORE INTO playlist_removals (playlist_id, track_id, added_at, detected_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![id, track_id, added_at, detected],
                 )?;
             }
         }

@@ -44,9 +44,10 @@ Spotify's API doesn't expose folders, so the **Playlists** tab maps each playlis
 Data lives in `%APPDATA%\com.richardnguyen.spotifysorter\sorter.db`; the Spotify login is stored in
 Windows Credential Manager.
 
-## Audio and lyrics suggestions (optional)
+## Audio, lyrics and genre suggestions (optional)
 
-`ml/sorter_ml.py` suggests playlists from what a song sounds like:
+`ml/sorter_ml.py` suggests playlists from what a song sounds like, what it's about, and its
+artists' genres:
 
 - **Audio:** each song's 30 s Deezer preview (looked up by ISRC) is embedded with
   [MERT-v1-95M](https://huggingface.co/m-a-p/MERT-v1-95M) (one middle layer, averaged over the
@@ -54,20 +55,30 @@ Windows Credential Manager.
   Changing the audio model re-analyses every song automatically.
 - **Lyrics:** fetched from [LRCLIB](https://lrclib.net) (one request at a time, 1 per second, as its API guidelines ask) and
   embedded with a multilingual sentence model.
-- **Sound-alikes:** for each Liked Song, the 120 most similar songs in your library vote for the
-  playlists they're in. The app blends that with artist history (history weighted 2×).
+- **Artist genres:** looked up on [MusicBrainz](https://musicbrainz.org) (via its link to the
+  artist's Spotify page, else an unambiguous exact-name match; 1 request/s), using curated genres
+  plus the top community tags. Only tags shared by 5+ of your kept songs are used. Spotify no
+  longer returns artist genres to Development Mode apps.
+- **Sound-alikes:** each song's audio, lyrics (equal weight) and genres (0.6×) form one vector.
+  For each Liked Song, the 120 most similar kept songs vote for the playlists they're in. The app
+  blends that with artist history (history weighted 2×).
 
-Cross-validated on the author's library (a correct vibe playlist in the top 3):
+How well it does, on the author's library. Each song is predicted only from songs filed before
+its quarter (last 8 quarters, 474 songs going into playlists that already existed) and judged on
+the vibe playlists picked when it was first sorted (later backfills don't count):
 
-| Suggestions from | All songs | Artist filed before | New artist |
+| | Top pick right | Right one in top 3 | Among the 9 suggested vibes |
 |---|---|---|---|
-| Artist history only | 47% | 65% | 0% |
-| + CLAP audio + lyrics | 70% | 74% | 57% |
-| **+ MERT audio + lyrics (current)** | **75%** | **76%** | **71%** |
+| MERT audio + lyrics + artist history | 40% | 64% | 84% |
+| **+ MusicBrainz genres (current)** | **43%** | **68%** | **86%** |
 
-Also tried and not adopted: MERT-v1-330M and other layers (no better), CLAP and MERT combined
-(worse than MERT alone), a trained linear model and mood/pace prediction (no better than simple
-baselines).
+(With 31 vibe playlists and usually one right answer, chance is ~3% for the top pick.)
+
+Also tried and not adopted, each no better than the baseline on this test: CLAP audio (MERT beat
+it by ~5 points on a random split), MERT-v1-330M and other layers, CLAP and MERT combined, Qwen3-4B
+lyric labels (mood, themes), weighting recent filings more, a learned similarity metric, a trained
+linear model, mood/pace prediction, and several weighting tweaks. Leaving pools, exercise and
+Random Ideas out of the Suggested row raised vibe picks among the chips from 63% to 77%.
 
 The app runs it after each sync (only new songs need downloading) and from **Analyse audio** in the
 top bar. Local files are never synced, so they're never analysed.

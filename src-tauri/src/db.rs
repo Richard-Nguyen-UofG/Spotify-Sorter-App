@@ -150,6 +150,21 @@ CREATE TABLE artists (
     genres     TEXT,          -- JSON array of genre/tag names; NULL if none were found
     fetched_at TEXT NOT NULL
 );
+"#,
+// Per-song genre vectors (written by ml/sorter_ml.py for Explore), and songs the user removed from
+// playlists (detected at sync): "doesn't fit here" evidence for future suggestions.
+r#"
+CREATE TABLE IF NOT EXISTS ml_genres (
+    track_id  TEXT PRIMARY KEY,
+    embedding BLOB NOT NULL
+);
+CREATE TABLE playlist_removals (
+    playlist_id TEXT NOT NULL,
+    track_id    TEXT NOT NULL,
+    added_at    TEXT,          -- when it had been added, if known
+    detected_at TEXT NOT NULL,
+    PRIMARY KEY (playlist_id, track_id, detected_at)
+);
 "#];
 
 pub fn open(path: &Path) -> AppResult<Connection> {

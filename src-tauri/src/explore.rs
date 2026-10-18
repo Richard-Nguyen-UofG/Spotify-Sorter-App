@@ -20,6 +20,9 @@ use crate::model::Track;
 const TEXT_DIM: usize = 384;
 /// Must match LYRICS_WEIGHT in ml/sorter_ml.py.
 const LYRICS_WEIGHT: f32 = 1.0;
+/// Must match GENRE_WEIGHT in ml/sorter_ml.py. The genre vector size comes from the data (the
+/// vocabulary of tags shared by 5+ kept songs, rebuilt on each analysis run).
+const GENRE_WEIGHT: f32 = 0.6;
 /// A candidate's sound score is its mean similarity to its closest few seed songs, so a playlist
 /// with two distinct moods can still pull in songs that match either one.
 const TOP_K: usize = 5;
@@ -102,18 +105,35 @@ impl VectorIndex {
             raw.push((row.get(0)?, audio, lyrics));
         }
 
+        // Artist-genre tags per song (multi-hot), written by the last analysis run.
+        let mut genres: HashMap<String, Vec<f32>> = HashMap::new();
+        {
+            let mut stmt = conn.prepare("SELECT track_id, embedding FROM ml_genres")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                genres.insert(row.get(0)?, floats(&row.get::<_, Vec<u8>>(1)?));
+            }
+        }
+        let genre_dim = genres.values().next().map_or(0, Vec::len);
+        genres.retain(|_, v| v.len() == genre_dim);
+
         // Centre each part on the library average before comparing: raw embeddings share a large
         // common component (two random songs averaged ~0.96 cosine with CLAP). Mirrors
         // Library.vectors in ml/sorter_ml.py.
-        let dim = audio_dim + TEXT_DIM;
+        let dim = audio_dim + TEXT_DIM + genre_dim;
         let audio_mean = mean(raw.iter().map(|r| &r.1), audio_dim);
         let lyrics_mean = mean(raw.iter().filter_map(|r| r.2.as_ref()), TEXT_DIM);
+        let genre_mean = mean(genres.values(), genre_dim);
         let (mut ids, mut data) = (Vec::with_capacity(raw.len()), Vec::with_capacity(raw.len() * dim));
         for (id, audio, lyrics) in raw {
             let mut v = centred_unit(&audio, &audio_mean, 1.0);
             match lyrics {
                 Some(l) => v.extend(centred_unit(&l, &lyrics_mean, LYRICS_WEIGHT)),
                 None => v.extend(std::iter::repeat(0.0).take(TEXT_DIM)),
+            }
+            match genres.get(&id) {
+                Some(g) => v.extend(centred_unit(g, &genre_mean, GENRE_WEIGHT)),
+                None => v.extend(std::iter::repeat(0.0).take(genre_dim)),
             }
             let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
             data.extend(v.iter().map(|x| x / norm));

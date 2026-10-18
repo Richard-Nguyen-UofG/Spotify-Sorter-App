@@ -589,7 +589,15 @@ pub async fn remove_tracks(db: &Db, spotify: &Spotify, playlist_id: &str, track_
         let uris: Vec<String> = chunk.iter().map(|(_, u)| u.clone()).collect();
         let snapshot = spotify.remove_from_playlist(playlist_id, &uris).await?;
         let conn = db::lock(db);
+        let detected = chrono::Utc::now().to_rfc3339();
         for (id, _) in chunk {
+            // A deliberate "doesn't fit here", same as pruning in Spotify (sync logs those).
+            conn.execute(
+                "INSERT OR IGNORE INTO playlist_removals (playlist_id, track_id, added_at, detected_at)
+                 SELECT playlist_id, track_id, added_at, ?3 FROM playlist_tracks
+                 WHERE playlist_id = ?1 AND track_id = ?2",
+                params![playlist_id, id, detected],
+            )?;
             conn.execute(
                 "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
                 params![playlist_id, id],

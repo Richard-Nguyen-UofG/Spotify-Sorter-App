@@ -4,6 +4,7 @@ Reads the app's SQLite database and:
   1. fills in features for songs that don't have them yet:
      - audio: Deezer's 30 s preview (looked up by ISRC) -> MERT music embedding on the GPU
      - lyrics: LRCLIB -> multilingual sentence embedding
+     - artist genres: MusicBrainz (curated genres + top community tags)
   2. for each Liked Song, finds the songs in your library that sound most alike and scores each
      filing playlist (vibe, pool, exercise, idea) by how many of those sound-alikes it holds,
   3. writes those scores to `ml_scores`, which the app blends with artist history.
@@ -53,6 +54,12 @@ AUDIO_VERSION = f"{AUDIO_MODEL}@{AUDIO_REVISION[:8]}#layer{AUDIO_LAYER}"
 TEXT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 AUDIO_DIM, TEXT_DIM = 768, 384
 LYRICS_WEIGHT = 1.0     # lyrics count as much as audio (best of 0–1.5 in cross-validation)
+# Artist genres from MusicBrainz as a third block. On the rolling quarterly test (songs judged on
+# the playlists picked when first sorted) it was the one addition that clearly helped:
+# top pick +2.9, top 3 +4.1, among the 9 chips +2.3 points.
+GENRE_WEIGHT = 0.6      # keep in sync with GENRE_WEIGHT in src-tauri/src/explore.rs
+GENRE_MIN_SONGS = 5     # only genre tags shared by at least this many kept songs
+GENRE_TOP_TAGS = 5      # community tags per artist, most-voted first
 NEIGHBOURS = 120        # sound-alikes per song (best of 25/60/120 in cross-validation)
 HISTORY_WEIGHT = 2.0    # keep in sync with HISTORY_WEIGHT in src-tauri/src/sorting.rs
 
@@ -98,6 +105,16 @@ CREATE TABLE IF NOT EXISTS ml_scores (
 CREATE TABLE IF NOT EXISTS ml_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS artists (
+    id         TEXT PRIMARY KEY,
+    name       TEXT,
+    genres     TEXT,                   -- JSON list; NULL if MusicBrainz had none
+    fetched_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ml_genres (
+    track_id  TEXT PRIMARY KEY,
+    embedding BLOB NOT NULL            -- multi-hot over the current genre vocabulary
 );
 """
 
@@ -148,6 +165,8 @@ DEEZER = RateLimiter(8)      # Deezer allows 50 requests / 5 s
 # LRCLIB quotes ~90 requests/min for identified clients and asks for one request at a time with
 # a short pause between. In practice 75/min still drew a "wait" on most songs, so use 60/min.
 LRCLIB = RateLimiter(1.0)
+MUSICBRAINZ = "https://musicbrainz.org/ws/2"
+MB_LIMIT = RateLimiter(0.95)  # MusicBrainz allows at most 1 request/second on average
 
 
 # How often a server answered 429/503 ("slow down"); shown in progress messages.
@@ -500,6 +519,61 @@ def fill_lyrics(db, ids):
     db.commit()
 
 
+# ----------------------------------------------------------------------------- artist genres
+
+def musicbrainz_genres(artist_id, name):
+    """An artist's genres: found via MusicBrainz's link to its Spotify page, else an unambiguous
+    exact-name match. Returns None when the artist or any genre/tag can't be found."""
+    hit = get_json(f"{MUSICBRAINZ}/url", {"resource": f"https://open.spotify.com/artist/{artist_id}",
+                                          "inc": "artist-rels", "fmt": "json"}, MB_LIMIT)
+    linked = [r["artist"] for r in (hit or {}).get("relations", []) if r.get("artist")]
+    mbid = linked[0]["id"] if linked else None
+    if not mbid and name:
+        found = get_json(f"{MUSICBRAINZ}/artist", {"query": f'artist:"{name}"', "limit": 3, "fmt": "json"}, MB_LIMIT) or {}
+        exact = [a for a in found.get("artists", [])
+                 if a.get("score", 0) >= 95 and a.get("name", "").casefold() == name.casefold()]
+        mbid = exact[0]["id"] if len(exact) == 1 else None
+    if not mbid:
+        return None
+    info = get_json(f"{MUSICBRAINZ}/artist/{mbid}", {"inc": "genres tags", "fmt": "json"}, MB_LIMIT) or {}
+    genres = [g["name"] for g in sorted(info.get("genres", []), key=lambda g: -g.get("count", 0))]
+    tags = [t["name"] for t in sorted(info.get("tags", []), key=lambda t: -t.get("count", 0)) if t.get("count", 0) > 0]
+    combined = list(dict.fromkeys(genres + tags[:GENRE_TOP_TAGS]))
+    return combined or None
+
+
+def fill_artist_genres(db, ids):
+    """Looks up artists of the given songs that haven't been looked up yet, plus a few whose last
+    lookup found nothing and is over RECHECK_AFTER_DAYS old (MusicBrainz keeps growing)."""
+    wanted = set(ids)
+    artists = {}
+    for aid, name, tid in db.execute("SELECT artist_id, artist_name, track_id FROM track_artists WHERE artist_id IS NOT NULL"):
+        if tid in wanted:
+            artists.setdefault(aid, name)
+    have = {r[0] for r in db.execute("SELECT id FROM artists")}
+    todo = [(a, n) for a, n in artists.items() if a not in have]
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=RECHECK_AFTER_DAYS)).isoformat()
+    todo += [(a, n) for a, n in db.execute(
+        "SELECT id, name FROM artists WHERE genres IS NULL AND fetched_at < ? ORDER BY fetched_at", (cutoff,))
+        if a in artists][:RECHECK_PER_RUN]
+    if not todo:
+        return
+    counts = defaultdict(int)
+    for k, (aid, name) in enumerate(todo, 1):
+        try:
+            genres = musicbrainz_genres(aid, name)
+        except Exception:  # noqa: BLE001 - not stored, so it's tried again on a later run
+            counts["error"] += 1
+            continue
+        counts["found" if genres else "none"] += 1
+        db.execute("INSERT OR REPLACE INTO artists (id, name, genres, fetched_at) VALUES (?, ?, ?, ?)",
+                   (aid, name, json.dumps(genres) if genres else None, now()))
+        db.commit()
+        if k % 10 == 0 or k == len(todo):
+            tally = ", ".join(f"{n} {s}" for s, n in sorted(counts.items()))
+            emit("genres", f"Artist genres ({k}/{len(todo)}): {tally}", k, len(todo))
+
+
 # ----------------------------------------------------------------------------- dataset
 
 class Library:
@@ -530,6 +604,31 @@ class Library:
         # Reference songs: kept songs we have audio for.
         self.universe = sorted(t for t in kept if t in self.audio)
 
+        # Genre tags per song (union of its artists'), as multi-hot vectors over the tags shared
+        # by at least GENRE_MIN_SONGS kept songs.
+        artist_genres = {a: json.loads(g) for a, g in db.execute("SELECT id, genres FROM artists WHERE genres IS NOT NULL")}
+        song_tags = {}
+        for tid, artists in self.artists.items():
+            tags = set()
+            for aid, _ in artists:
+                tags.update(artist_genres.get(aid, ()))
+            if tags:
+                song_tags[tid] = tags
+        tag_counts = defaultdict(int)
+        for t in self.universe:
+            for g in song_tags.get(t, ()):
+                tag_counts[g] += 1
+        self.genre_vocab = sorted(g for g, n in tag_counts.items() if n >= GENRE_MIN_SONGS)
+        index = {g: i for i, g in enumerate(self.genre_vocab)}
+        self.genres = {}
+        for t, tags in song_tags.items():
+            v = np.zeros(len(self.genre_vocab), np.float32)
+            for g in tags:
+                if g in index:
+                    v[index[g]] = 1
+            if v.any():
+                self.genres[t] = v
+
     def vectors(self, ids):
         """Audio embedding with the lyrics embedding (when known) mixed in, unit length.
 
@@ -537,17 +636,22 @@ class Library:
         common component (average cosine between two songs ~0.96), which makes a few "hub"
         songs look similar to everything. Mirrors VectorIndex::build in src-tauri/src/explore.rs.
         """
+        genre_dim = len(self.genre_vocab)
         if not hasattr(self, "_means"):
             self._means = (np.mean(list(self.audio.values()), axis=0),
-                           np.mean(list(self.lyrics.values()), axis=0) if self.lyrics else np.zeros(TEXT_DIM))
-        audio_mean, lyrics_mean = self._means
-        X = np.zeros((len(ids), AUDIO_DIM + TEXT_DIM), np.float32)
+                           np.mean(list(self.lyrics.values()), axis=0) if self.lyrics else np.zeros(TEXT_DIM),
+                           np.mean(list(self.genres.values()), axis=0) if self.genres else np.zeros(genre_dim))
+        audio_mean, lyrics_mean, genre_mean = self._means
+        X = np.zeros((len(ids), AUDIO_DIM + TEXT_DIM + genre_dim), np.float32)
         for i, t in enumerate(ids):
             a = self.audio[t] - audio_mean
             X[i, :AUDIO_DIM] = a / (np.linalg.norm(a) + 1e-9)
             if t in self.lyrics:
                 l = self.lyrics[t] - lyrics_mean
-                X[i, AUDIO_DIM:] = LYRICS_WEIGHT * l / (np.linalg.norm(l) + 1e-9)
+                X[i, AUDIO_DIM:AUDIO_DIM + TEXT_DIM] = LYRICS_WEIGHT * l / (np.linalg.norm(l) + 1e-9)
+            if genre_dim and t in self.genres:
+                g = self.genres[t] - genre_mean
+                X[i, AUDIO_DIM + TEXT_DIM:] = GENRE_WEIGHT * g / (np.linalg.norm(g) + 1e-9)
         return X / np.linalg.norm(X, axis=1, keepdims=True)
 
     def labels(self, ids):
@@ -682,6 +786,10 @@ def score_liked(db):
     if len(lib.universe) < 50 or not lib.targets:
         emit("score", "Not enough analysed songs yet")
         return
+    # Explore (Rust) builds the same vectors; it needs each song's genre tags over this vocabulary.
+    db.execute("DELETE FROM ml_genres")
+    db.executemany("INSERT INTO ml_genres (track_id, embedding) VALUES (?, ?)",
+                   [(t, v.astype(np.float32).tobytes()) for t, v in lib.genres.items()])
     liked = [tid for (tid,) in db.execute("SELECT track_id FROM liked") if tid in lib.audio]
     db.execute("DELETE FROM ml_scores")
     if liked:
@@ -735,6 +843,13 @@ def main():
     fill_audio(db, ids)
     if not args.skip_lyrics:
         fill_lyrics(db, ids)
+    # Genres only matter for the reference library (kept songs) and the songs being sorted.
+    kinds = ",".join(f"'{k}'" for k in KEPT_KINDS)
+    genre_ids = [r[0] for r in db.execute(f"""
+        SELECT DISTINCT pt.track_id FROM playlist_tracks pt JOIN playlists p ON p.id = pt.playlist_id
+        WHERE p.present = 1 AND p.owned = 1 AND p.kind IN ({kinds})
+        UNION SELECT track_id FROM liked""")]
+    fill_artist_genres(db, genre_ids)
     if args.command == "eval":
         report = evaluate(db)
         emit("done", "Evaluation finished", report=report)
