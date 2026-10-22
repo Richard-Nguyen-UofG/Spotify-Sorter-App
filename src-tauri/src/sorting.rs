@@ -8,7 +8,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::db::{self, Db};
 use crate::error::{AppError, AppResult};
-use crate::model::{CommitSummary, DatedTarget, QueueItem, Suggestion, SuggestionStats, TrackContext};
+use crate::model::{CommitSummary, DatedTarget, ExplorePick, QueueItem, Suggestion, SuggestionStats, TrackContext};
 use crate::spotify::Spotify;
 
 /// Playlist kinds that reflect a real judgment about the song (as opposed to the defaults).
@@ -124,8 +124,8 @@ pub fn track_context(conn: &Connection, track_id: &str) -> AppResult<TrackContex
 }
 
 /// Weight of artist history relative to sound-alikes once both are scaled to their best playlist.
-/// Chosen by cross-validation in ml/sorter_ml.py (keep the two in sync).
-const HISTORY_WEIGHT: f64 = 2.0;
+/// Sound-alikes dominate; artist history provides a gentle tie-breaker or fallback (originally 2.0).
+const HISTORY_WEIGHT: f64 = 0.2; // Originally 2.0
 
 /// Artist history blended with sound-alike scores from ml/sorter_ml.py (when it has scored the
 /// song). Each source is scaled so its best playlist is 1, then history is weighted up: it's the
@@ -164,10 +164,13 @@ fn blended_suggestions(conn: &Connection, track_id: &str) -> AppResult<(Vec<Sugg
     for s in history {
         let entry = merged.entry(s.playlist_id).or_default();
         entry.0 += HISTORY_WEIGHT * s.score / best_history;
-        // Artist reasons first: they're the more concrete explanation.
-        let mut reasons = s.reasons;
-        reasons.append(&mut entry.1);
-        entry.1 = reasons;
+        // Only sound-alike reasons ("X% of sound-alikes are here") are shown when audio analysis is available.
+        // Artist history reasons ("X of Y songs by [Artist]") are commented out here so they only display on fallback
+        // (when sound-alikes are empty / unanalyzed audio), prioritizing "sounds like" over artist match:
+        //
+        // let mut reasons = s.reasons;
+        // reasons.append(&mut entry.1);
+        // entry.1 = reasons;
     }
     let mut suggestions: Vec<Suggestion> = merged
         .into_iter()
@@ -217,7 +220,7 @@ fn artist_history(conn: &Connection, track_id: &str) -> AppResult<Vec<Suggestion
                AND p.kind IN ({KEEPER_KINDS})
              GROUP BY pt.playlist_id"
         ))?;
-        let weight = if position == 0 { 1.0 } else { 0.6 };
+        let weight = if position == 0 { 1.0 } else { 0.3 }; // Featured artist weight (originally 0.6)
         let per_playlist = stmt.query_map(params![artist_id, track_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
         })?;
@@ -263,10 +266,70 @@ pub fn stage(
         params![track_id, serde_json::to_string(playlist_ids)?, unlike, now],
     )?;
     conn.execute("DELETE FROM suggestion_log WHERE track_id = ?1 AND commit_id IS NULL", [track_id])?;
+    let (ranking, settings) = ranking_snapshot(conn, track_id)?;
     conn.execute(
-        "INSERT INTO suggestion_log (track_id, shown, picked, audio_analysed, staged_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![track_id, serde_json::to_string(shown)?, serde_json::to_string(playlist_ids)?, audio_analysed, now],
+        "INSERT INTO suggestion_log (track_id, shown, picked, audio_analysed, staged_at, ranking, settings)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            track_id,
+            serde_json::to_string(shown)?,
+            serde_json::to_string(playlist_ids)?,
+            audio_analysed,
+            now,
+            ranking.to_string(),
+            settings.to_string()
+        ],
     )?;
+    Ok(())
+}
+
+/// Every playlist's blended score for the song, best first, with the raw sound-alike share and
+/// artist-history score it came from (so other blends can be replayed later), plus the settings
+/// that produced them.
+fn ranking_snapshot(conn: &Connection, track_id: &str) -> AppResult<(serde_json::Value, serde_json::Value)> {
+    let sound: HashMap<String, f64> = {
+        let mut stmt = conn.prepare("SELECT target, score FROM ml_scores WHERE track_id = ?1")?;
+        let rows = stmt.query_map([track_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+        rows
+    };
+    let history: HashMap<String, f64> =
+        artist_history(conn, track_id)?.into_iter().map(|s| (s.playlist_id, s.score)).collect();
+    let (blended, _) = blended_suggestions(conn, track_id)?;
+    let ranking: Vec<serde_json::Value> = blended
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "id": s.playlist_id,
+                "score": s.score,
+                "sound": sound.get(&s.playlist_id),
+                "history": history.get(&s.playlist_id),
+            })
+        })
+        .collect();
+    let scoring: Option<String> = conn
+        .query_row("SELECT value FROM ml_meta WHERE key = 'scoring'", [], |r| r.get(0))
+        .optional()?;
+    let trained_at: Option<String> = conn
+        .query_row("SELECT value FROM ml_meta WHERE key = 'trained_at'", [], |r| r.get(0))
+        .optional()?;
+    let settings = serde_json::json!({
+        "history_weight": HISTORY_WEIGHT,
+        "scoring": scoring.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
+        "trained_at": trained_at.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
+    });
+    Ok((serde_json::Value::Array(ranking), settings))
+}
+
+/// Records songs added or removed through Explore, with where each sat in the results.
+pub fn log_explore(conn: &Connection, action: &str, playlist_id: Option<&str>, picks: &[ExplorePick]) -> AppResult<()> {
+    let now = Local::now().to_rfc3339();
+    for p in picks {
+        conn.execute(
+            "INSERT INTO explore_log (at, action, mode, source, playlist_id, track_id, grp, rank, group_size)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![now, action, p.mode, p.source, playlist_id, p.track_id, p.group, p.rank, p.group_size],
+        )?;
+    }
     Ok(())
 }
 
@@ -727,5 +790,90 @@ mod tests {
         assert_eq!(semester_name(at(8, 30)), "Summer 2026");
         assert_eq!(semester_name(at(9, 1)), "Fall 2026");
         assert_eq!(semester_name(at(12, 31)), "Fall 2026");
+    }
+
+    #[test]
+    fn stage_logs_full_ranking_and_settings() {
+        let dir = std::env::temp_dir().join(format!("sorter-rank-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = crate::db::open(&dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO playlists (id, name, kind, present) VALUES ('v1','a','vibe',1), ('v2','b','vibe',1);
+             INSERT INTO ml_scores (track_id, target, score) VALUES ('t','v1',0.2), ('t','v2',0.6);
+             INSERT INTO ml_meta (key, value) VALUES ('scoring', '{\"neighbours\":120}');",
+        )
+        .unwrap();
+        super::stage(&conn, "t", &["v2".into()], true, &["v2".into(), "v1".into()], true).unwrap();
+        let (ranking, settings): (String, String) = conn
+            .query_row("SELECT ranking, settings FROM suggestion_log WHERE track_id = 't'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        let ranking: serde_json::Value = serde_json::from_str(&ranking).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&settings).unwrap();
+        assert_eq!(ranking[0]["id"], "v2");
+        assert_eq!(ranking[1]["sound"], 0.2);
+        assert_eq!(settings["history_weight"], 0.2);
+        assert_eq!(settings["scoring"]["neighbours"], 120);
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn blended_suggestions_reason_handling() {
+        let dir = std::env::temp_dir().join(format!("sorter-blend-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = crate::db::open(&dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO playlists (id, name, kind, present, owned) VALUES ('v1','Vibe 1','vibe',1,1), ('v2','Vibe 2','vibe',1,1);
+             INSERT INTO track_artists (track_id, position, artist_id, artist_name) VALUES ('curr', 0, 'art1', 'Lead Artist');
+             INSERT INTO track_artists (track_id, position, artist_id, artist_name) VALUES ('other', 0, 'art1', 'Lead Artist');
+             INSERT INTO playlist_tracks (playlist_id, track_id) VALUES ('v1', 'other');
+             INSERT INTO ml_scores (track_id, target, score) VALUES ('curr', 'v2', 0.8);"
+        ).unwrap();
+
+        // When sound-alikes exist: only sound-alike reasons appear, not artist history reasons
+        let (sugg, analysed) = super::blended_suggestions(&conn, "curr").unwrap();
+        assert!(analysed);
+        let v2 = sugg.iter().find(|s| s.playlist_id == "v2").unwrap();
+        assert_eq!(v2.reasons, vec!["80% of sound-alikes are here".to_string()]);
+
+        // Fallback case: when sound-alikes are empty, artist reasons are shown
+        conn.execute("DELETE FROM ml_scores WHERE track_id = 'curr'", []).unwrap();
+        let (fallback_sugg, fallback_analysed) = super::blended_suggestions(&conn, "curr").unwrap();
+        assert!(!fallback_analysed);
+        let v1 = fallback_sugg.iter().find(|s| s.playlist_id == "v1").unwrap();
+        assert!(v1.reasons[0].contains("songs by Lead Artist"));
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn artist_history_featured_weight() {
+        let dir = std::env::temp_dir().join(format!("sorter-feat-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = crate::db::open(&dir.join("t.db")).unwrap();
+        conn.execute_batch(
+            "INSERT INTO playlists (id, name, kind, present, owned) VALUES ('p_lead','Lead List','vibe',1,1), ('p_feat','Feat List','vibe',1,1);
+             -- target song has lead artist 'lead' and featured artist 'feat'
+             INSERT INTO track_artists (track_id, position, artist_id, artist_name) VALUES ('t', 0, 'lead', 'Lead');
+             INSERT INTO track_artists (track_id, position, artist_id, artist_name) VALUES ('t', 1, 'feat', 'Feat');
+             -- previous tracks in library:
+             INSERT INTO track_artists (track_id, position, artist_id, artist_name) VALUES ('t_lead', 0, 'lead', 'Lead');
+             INSERT INTO playlist_tracks (playlist_id, track_id) VALUES ('p_lead', 't_lead');
+             INSERT INTO track_artists (track_id, position, artist_id, artist_name) VALUES ('t_feat', 0, 'feat', 'Feat');
+             INSERT INTO playlist_tracks (playlist_id, track_id) VALUES ('p_feat', 't_feat');"
+        ).unwrap();
+
+        let history = super::artist_history(&conn, "t").unwrap();
+        let lead_score = history.iter().find(|s| s.playlist_id == "p_lead").unwrap().score;
+        let feat_score = history.iter().find(|s| s.playlist_id == "p_feat").unwrap().score;
+        // Lead weight is 1.0 (share 1/2 = 0.5), feat weight is 0.3 (share 1/2 * 0.3 = 0.15)
+        assert_eq!(lead_score, 0.5);
+        assert_eq!(feat_score, 0.15);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,8 +1,9 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, errorText, type Mood, type Pace, type Playlist, type QueueItem, type Status, type TrackContext } from '../api';
 import {
   autoIds, cellKey, cellScores, emptySelection, finalIds, fromStaged, MOODS, PACES, toggle, type Selection,
 } from '../filing';
+import Player from './Player';
 
 interface Props {
   playlists: Playlist[];
@@ -24,6 +25,53 @@ const MOOD_LABEL: Record<Mood, string> = { positive: 'Positive', negative: 'Nega
 // user's vibe picks among the 9 chips went 63% (all kinds) → 71% (no pools) → 77% (vibes only).
 const SUGGESTABLE = new Set(['vibe']);
 
+type SortOption = 'title' | 'recently_added' | 'artist' | 'album';
+type SortDirection = 'asc' | 'desc';
+
+interface SortState {
+  option: SortOption;
+  direction: SortDirection;
+}
+
+const SORT_OPTIONS: { id: SortOption; label: string }[] = [
+  { id: 'title', label: 'Title' },
+  { id: 'recently_added', label: 'Recently added' },
+  { id: 'artist', label: 'Artist' },
+  { id: 'album', label: 'Album' },
+];
+
+const DEFAULT_SORT: SortState = {
+  option: 'recently_added',
+  direction: 'desc',
+};
+
+const SORT_STORAGE_KEY = 'spotifySorterSort';
+
+function loadSort(): SortState {
+  try {
+    const raw = localStorage.getItem(SORT_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const validOptions: SortOption[] = ['title', 'recently_added', 'artist', 'album'];
+      const validDirs: SortDirection[] = ['asc', 'desc'];
+      if (validOptions.includes(parsed?.option) && validDirs.includes(parsed?.direction)) {
+        return { option: parsed.option, direction: parsed.direction };
+      }
+    }
+  } catch {
+    // fallback to default
+  }
+  return DEFAULT_SORT;
+}
+
+function saveSort(state: SortState) {
+  try {
+    localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // ignore
+  }
+}
+
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
@@ -33,9 +81,75 @@ function isTyping(target: EventTarget | null) {
 }
 
 export default function Sort({ playlists, queue, canRevert, stats, refreshKey, onChanged, onError, onNotice }: Props) {
+  const [sort, setSort] = useState<SortState>(loadSort);
+  const [sortOpen, setSortOpen] = useState(false);
+  const sortRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!sortOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (sortRef.current && !sortRef.current.contains(e.target as Node)) {
+        setSortOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSortOpen(false);
+    };
+    window.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [sortOpen]);
+
+  const selectSort = (option: SortOption) => {
+    setSort((prev) => {
+      const next: SortState = {
+        option,
+        direction: prev.option === option
+          ? (prev.direction === 'asc' ? 'desc' : 'asc')
+          : (option === 'recently_added' ? 'desc' : 'asc'),
+      };
+      saveSort(next);
+      return next;
+    });
+  };
+
+  const sortedQueue = useMemo(() => {
+    const items = [...queue];
+    items.sort((a, b) => {
+      let diff = 0;
+      if (sort.option === 'recently_added') {
+        diff = a.likedAt.localeCompare(b.likedAt);
+        if (diff !== 0) return sort.direction === 'asc' ? diff : -diff;
+      } else {
+        let aText = '';
+        let bText = '';
+        if (sort.option === 'title') {
+          aText = a.track.name;
+          bText = b.track.name;
+        } else if (sort.option === 'artist') {
+          aText = a.track.artists[0]?.name ?? '';
+          bText = b.track.artists[0]?.name ?? '';
+        } else if (sort.option === 'album') {
+          aText = a.track.album ?? '';
+          bText = b.track.album ?? '';
+        }
+        diff = aText.toLowerCase().localeCompare(bText.toLowerCase());
+        if (diff !== 0) return sort.direction === 'asc' ? diff : -diff;
+
+        const dateDiff = a.likedAt.localeCompare(b.likedAt);
+        if (dateDiff !== 0) return dateDiff;
+      }
+      return a.track.id.localeCompare(b.track.id);
+    });
+    return items;
+  }, [queue, sort]);
+
   const byId = useMemo(() => new Map(playlists.map((p) => [p.id, p])), [playlists]);
   const [currentId, setCurrentId] = useState<string | null>(null);
-  const current = queue.find((q) => q.track.id === currentId) ?? queue.find((q) => !q.staged) ?? queue[0] ?? null;
+  const current = sortedQueue.find((q) => q.track.id === currentId) ?? sortedQueue.find((q) => !q.staged) ?? sortedQueue[0] ?? null;
 
   const [ctx, setCtx] = useState<TrackContext | null>(null);
   const [sel, setSel] = useState<Selection>(emptySelection);
@@ -83,14 +197,14 @@ export default function Sort({ playlists, queue, canRevert, stats, refreshKey, o
 
   const goTo = useCallback((direction: 1 | -1, onlyUnstaged = false) => {
     if (!current) return;
-    const start = queue.findIndex((q) => q.track.id === current.track.id);
-    for (let i = start + direction; i >= 0 && i < queue.length; i += direction) {
-      if (!onlyUnstaged || !queue[i].staged) {
-        setCurrentId(queue[i].track.id);
+    const start = sortedQueue.findIndex((q) => q.track.id === current.track.id);
+    for (let i = start + direction; i >= 0 && i < sortedQueue.length; i += direction) {
+      if (!onlyUnstaged || !sortedQueue[i].staged) {
+        setCurrentId(sortedQueue[i].track.id);
         return;
       }
     }
-  }, [current, queue]);
+  }, [current, sortedQueue]);
 
   const stageAndNext = useCallback(async () => {
     if (!current || !ctx) return;
@@ -199,10 +313,49 @@ export default function Sort({ playlists, queue, canRevert, stats, refreshKey, o
       <aside className="queue">
         <div className="queue-head">
           <strong>Liked Songs</strong>
-          <span className="muted small">oldest first · {queue.length}</span>
+          <div className="queue-sort">
+            <div className="sort-dropdown" ref={sortRef}>
+              <button
+                type="button"
+                className="link small sort-trigger"
+                onClick={() => setSortOpen((o) => !o)}
+                aria-expanded={sortOpen}
+                aria-haspopup="menu"
+                title="Sort queue"
+              >
+                <span>{SORT_OPTIONS.find((o) => o.id === sort.option)?.label}</span>
+                <span className="sort-arrow">{sort.direction === 'asc' ? '↑' : '↓'}</span>
+                <span className="chevron">{sortOpen ? '▴' : '▾'}</span>
+              </button>
+              {sortOpen && (
+                <ul className="sort-menu" role="menu">
+                  {SORT_OPTIONS.map((opt) => {
+                    const isActive = opt.id === sort.option;
+                    return (
+                      <li key={opt.id} role="none">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className={`sort-menu-item${isActive ? ' active' : ''}`}
+                          onClick={() => {
+                            selectSort(opt.id);
+                            setSortOpen(false);
+                          }}
+                        >
+                          <span>{opt.label}</span>
+                          {isActive && <span className="sort-arrow">{sort.direction === 'asc' ? '↑' : '↓'}</span>}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+            <span className="muted small">· {sortedQueue.length}</span>
+          </div>
         </div>
         <ul>
-          {queue.map((q) => (
+          {sortedQueue.map((q) => (
             <li key={q.track.id}>
               <button className={`queue-item${q.track.id === track?.id ? ' current' : ''}${q.staged ? ' staged' : ''}`}
                 onClick={() => setCurrentId(q.track.id)}>
@@ -250,8 +403,7 @@ export default function Sort({ playlists, queue, canRevert, stats, refreshKey, o
             </div>
 
             {showPlayer && (
-              <iframe className="player" title="Spotify player" src={`https://open.spotify.com/embed/track/${track.id}?theme=0`}
-                allow="encrypted-media; clipboard-write" loading="lazy" />
+              <Player trackId={track.id} onError={onError} />
             )}
 
             {ctx.alreadyIn.length > 0 && (

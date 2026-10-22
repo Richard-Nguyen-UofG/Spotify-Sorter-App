@@ -1,0 +1,80 @@
+SPOTIFY SORTER: 3-MONTH REVIEW PLAN
+===================================
+Real use started: 2026-10-19
+Review due:       around 2027-01-19 (after ~12 weekly sorts)
+
+Goal: learn from real use where suggestions, Explore and the models help or fall short,
+and decide what to change. Everything below comes from what the app logs while you use it;
+nothing needs to be filled in by hand.
+
+
+WHERE THE DATA IS
+-----------------
+App database:   %APPDATA%\com.richardnguyen.spotifysorter\sorter.db
+Baseline copy:  %APPDATA%\com.richardnguyen.spotifysorter\backups\sorter-2026-10-19-baseline.db
+                (state before real use: playlists, analysis, no suggestion log yet)
+
+Tables to read:
+  suggestion_log     one row per staged song: the 9 Suggested vibes shown (best first), the
+                     playlists picked, whether audio analysis was available, commit/revert,
+                     and (from 2026-10-19) `ranking`: every playlist's blended score with its
+                     sound-alike share and artist-history score, and `settings`: the history
+                     weight plus the analysis settings (audio/lyrics model, genre and lyrics
+                     weights, neighbours) and when scores were computed.
+  explore_log        songs added/removed/used to create a playlist from Explore: which tool,
+                     what was searched, which section (sound / artist / misfit), and position.
+  playlist_removals  songs that disappeared from a playlist (pruned in Spotify, found by sync,
+                     or removed via Misfits), with when they had been added.
+  filings            each committed song: playlists it went to, whether it was unliked, when
+                     it was liked and filed, and whether the commit was reverted.
+
+
+WHAT TO LOOK AT
+---------------
+1. Real-use accuracy of the Suggested vibes row
+   - Committed, not reverted songs where a vibe playlist was picked: how often a pick was
+     the top suggestion, in the top 3, among the 9. Compare with the offline test
+     (top pick ~43%, top 3 ~68%, among 9 ~86%).
+   - Split by: artist already in my playlists vs new artist; audio analysed vs not;
+     month (does it drift?); Positive vs Negative mood playlists.
+   - Where the pick ranked when it missed the 9 (from `ranking`): near misses (10-12)
+     suggest showing more chips; far misses point at what the models can't see.
+
+2. Which playlists get mixed up
+   - For misses: which playlist was suggested first vs picked. Known offline: Positive vs
+     Negative mood pairs (indie -> my heart oof, my heart oof -> my heart oop, sfl karaoke
+     -> my heart oop). Check whether the same pairs dominate in real use.
+   - Playlists that are almost never suggested correctly: candidates for a written
+     "what defines this playlist" or for accepting that the app can't help there.
+
+3. Replay ideas on real decisions (no new data needed)
+   - Using `ranking` (sound and history kept separately): would a different history
+     weight, or more chips, have caught more picks? Only change settings if the gain is
+     clear (paired bootstrap, as in the offline tests).
+   - If settings changed during the 3 months, compare periods using `settings`.
+
+4. Explore in real use
+   - From explore_log: which tool gets used, how often songs come from the sound section
+     vs the artist section, and from what positions (are picks near the top? would a
+     shorter list do?).
+   - Offline reference: Grow found ~18% of hidden songs by artist + ~8.5% by sound;
+     a few seeds ~14% of sound-alikes belonged to the seeds' playlist.
+
+5. Misfits vs real pruning
+   - For each pruned song (playlist_removals), where would Misfits have ranked it in that
+     playlist? Offline: songs from a random other vibe ranked in the worst ~17%, songs
+     from the most similar vibe barely below average (~44%). Real pruning is the honest
+     test that wasn't possible before.
+
+6. Habits worth checking
+   - Songs unliked without filing anywhere; songs filed to many playlists at once.
+   - Whether semester / Gold filing ever needed correcting (reverts).
+   - API use per sync (quota trouble since the 2026-10-17 block?).
+
+
+IDEAS ALREADY TESTED AND REJECTED (don't redo without new data)
+---------------------------------------------------------------
+Audio: CLAP, CLAP+MERT, MERT-330M, MuQ (none beat MERT-95M layer 4).
+Lyrics models: bge-m3, e5-large. Qwen labels/chat. Release year, recency, learned metric,
+pool-based mood check, typicality/anchor songs, per-playlist "sound/lyrics" tags
+(lyrics-heavy weighting hurt top 3).

@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
-import { api, errorText, type Match, type Playlist, type Track } from '../api';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { api, errorText, type ExplorePick, type Match, type Playlist, type Track } from '../api';
+import Player from './Player';
 
 type Mode = 'grow' | 'misfits' | 'seeds';
 
@@ -28,6 +29,125 @@ const TARGET_KINDS = new Set(['vibe', 'pool', 'exercise', 'idea', 'gold', 'gold_
 const KIND_ORDER = ['vibe', 'idea', 'exercise', 'pool', 'gold_all', 'gold'];
 
 const artistsOf = (t: Track) => t.artists.map((a) => a.name).join(', ');
+
+function SearchablePlaylistSelect({
+  playlists,
+  value,
+  onChange,
+  placeholder = 'Search or choose a playlist…',
+}: {
+  playlists: Playlist[];
+  value: string;
+  onChange: (id: string) => void;
+  placeholder?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState('');
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const selected = useMemo(() => playlists.find((p) => p.id === value), [playlists, value]);
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return playlists;
+    return playlists.filter((p) => p.name.toLowerCase().includes(q));
+  }, [playlists, filter]);
+
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setFilter('');
+      }
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, []);
+
+  const handleSelect = (id: string) => {
+    onChange(id);
+    setOpen(false);
+    setFilter('');
+  };
+
+  const handleClear = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onChange('');
+    setFilter('');
+    inputRef.current?.focus();
+  };
+
+  return (
+    <div className="playlist-picker" ref={wrapRef}>
+      <div className="playlist-picker-input-wrap">
+        <input
+          ref={inputRef}
+          type="text"
+          placeholder={selected ? `${selected.name} (${selected.total})` : placeholder}
+          value={open ? filter : (selected ? `${selected.name} (${selected.total})` : '')}
+          onChange={(e) => {
+            setFilter(e.target.value);
+            if (!open) setOpen(true);
+          }}
+          onFocus={() => {
+            setOpen(true);
+            setFilter('');
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setOpen(false);
+              setFilter('');
+            } else if (e.key === 'Enter' && open && filtered.length > 0) {
+              e.preventDefault();
+              handleSelect(filtered[0].id);
+            }
+          }}
+        />
+        {value && !open && (
+          <button type="button" className="playlist-picker-clear" onClick={handleClear} title="Clear selection">
+            ×
+          </button>
+        )}
+        <button
+          type="button"
+          className="playlist-picker-chevron"
+          onClick={() => {
+            setOpen((o) => !o);
+            if (!open) {
+              setFilter('');
+              inputRef.current?.focus();
+            }
+          }}
+          title={open ? 'Close' : 'Open playlist list'}
+        >
+          {open ? '▴' : '▾'}
+        </button>
+      </div>
+
+      {open && (
+        <ul className="playlist-picker-dropdown">
+          {filtered.length === 0 ? (
+            <li className="playlist-picker-empty">No matching playlists</li>
+          ) : (
+            filtered.map((p) => (
+              <li key={p.id}>
+                <button
+                  type="button"
+                  className={p.id === value ? 'active' : ''}
+                  onClick={() => handleSelect(p.id)}
+                >
+                  <span className="ellipsis">{p.name}</span>
+                  <span className="muted small">({p.total})</span>
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 export default function Explore({ playlists, analysed, onChanged, onError, onNotice }: Props) {
   const [mode, setMode] = useState<Mode>('grow');
@@ -74,10 +194,24 @@ export default function Explore({ playlists, analysed, onChanged, onError, onNot
     return () => clearTimeout(handle);
   }, [query, mode, onError]);
 
+  // What produced the current results, for logging picks (seeds can change after a search).
+  const searched = useRef<{ mode: Mode; source: string | null }>({ mode: 'grow', source: null });
+  const picksFor = (ids: string[]): ExplorePick[] =>
+    ids.flatMap((id) => {
+      const m = results?.find((r) => r.track.id === id);
+      if (!m) return [];
+      const group = results!.filter((r) => r.group === m.group);
+      return [{
+        trackId: id, mode: searched.current.mode, source: searched.current.source, group: m.group,
+        rank: group.indexOf(m) + 1, groupSize: group.length,
+      }];
+    });
+
   const run = async () => {
     setLoading(true);
     setSelected(new Set());
     setConfirmRemove(false);
+    searched.current = { mode, source: mode === 'seeds' ? JSON.stringify(seeds.map((s) => s.id)) : playlistId };
     try {
       if (mode === 'grow') setResults(await api.exploreGrow(playlistId, includeInternal));
       else if (mode === 'misfits') setResults(await api.exploreMisfits(playlistId));
@@ -109,7 +243,7 @@ export default function Explore({ playlists, analysed, onChanged, onError, onNot
     const ids = [...selected];
     setBusy(true);
     try {
-      const n = await api.addTracks(id, ids);
+      const n = await api.addTracks(id, ids, picksFor(ids));
       await afterChange(`Added ${n} song${n === 1 ? '' : 's'} to ${byId.get(id)?.name ?? 'the playlist'}.`, new Set(ids));
     } catch (e) {
       onError(e);
@@ -126,7 +260,7 @@ export default function Explore({ playlists, analysed, onChanged, onError, onNot
     const ids = [...selected];
     setBusy(true);
     try {
-      const n = await api.removeTracks(playlistId, ids);
+      const n = await api.removeTracks(playlistId, ids, picksFor(ids));
       await afterChange(`Removed ${n} song${n === 1 ? '' : 's'} from ${byId.get(playlistId)?.name}.`, new Set(ids));
     } catch (e) {
       onError(e);
@@ -138,12 +272,52 @@ export default function Explore({ playlists, analysed, onChanged, onError, onNot
 
   const create = async () => {
     const ids = [...seeds.map((s) => s.id), ...selected];
+    const defaultName = seeds[0]?.name
+      ? (seeds.length === 1 ? `Similar to ${seeds[0].name}` : `${seeds[0].name} & more – Similar`)
+      : 'New Playlist';
+    const nameToUse = newName.trim() || defaultName;
     setBusy(true);
     try {
-      await api.createPlaylist(newName, ids);
-      onNotice(`Created “${newName.trim()}” with ${ids.length} songs. It's under Random Ideas; recategorise it on the Playlists tab if needed.`);
+      await api.createPlaylist(nameToUse, ids, picksFor([...selected]));
+      onNotice(`Created “${nameToUse}” with ${ids.length} song${ids.length === 1 ? '' : 's'}. It's under Random Ideas; recategorise it on the Playlists tab if needed.`);
       setNewName('');
       setSelected(new Set());
+      await onChanged();
+    } catch (e) {
+      onError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createFromGroup = async (group: Match['group']) => {
+    const groupItems = results?.filter((m) => m.group === group) ?? [];
+    if (groupItems.length === 0) return;
+
+    const selectedInGroup = groupItems.filter((m) => selected.has(m.track.id)).map((m) => m.track.id);
+    const matchIds = selectedInGroup.length > 0 ? selectedInGroup : groupItems.map((m) => m.track.id);
+    const ids = mode === 'seeds'
+      ? Array.from(new Set([...seeds.map((s) => s.id), ...matchIds]))
+      : matchIds;
+
+    let newPlaylistName = '';
+    if (mode === 'seeds') {
+      const seedLabel = seeds[0]?.name ? (seeds.length === 1 ? `Similar to ${seeds[0].name}` : `${seeds[0].name} & more`) : 'Picks';
+      const groupLabel = group === 'sound' ? 'Sounds like it' : 'By artists in it';
+      newPlaylistName = `${seedLabel} – ${groupLabel}`;
+    } else if (group === 'misfit') {
+      const sourceName = byId.get(playlistId)?.name ?? 'Playlist';
+      newPlaylistName = `${sourceName} – Misfits`;
+    } else {
+      const sourceName = byId.get(playlistId)?.name ?? 'Playlist';
+      const groupLabel = group === 'sound' ? 'Sounds like it' : 'By artists in it';
+      newPlaylistName = `${sourceName} – ${groupLabel}`;
+    }
+
+    setBusy(true);
+    try {
+      await api.createPlaylist(newPlaylistName, ids, picksFor(ids));
+      onNotice(`Created “${newPlaylistName}” with ${ids.length} song${ids.length === 1 ? '' : 's'}. It's under Random Ideas; recategorise it on the Playlists tab if needed.`);
       await onChanged();
     } catch (e) {
       onError(errorText(e));
@@ -182,10 +356,12 @@ export default function Explore({ playlists, analysed, onChanged, onError, onNot
 
         <div className="explore-controls">
           {mode !== 'seeds' ? (
-            <select value={playlistId} onChange={(e) => setPlaylistId(e.target.value)}>
-              <option value="">Choose a playlist…</option>
-              {targets.map((p) => <option key={p.id} value={p.id}>{p.name} ({p.total})</option>)}
-            </select>
+            <SearchablePlaylistSelect
+              playlists={targets}
+              value={playlistId}
+              onChange={setPlaylistId}
+              placeholder={mode === 'grow' ? 'Search a playlist to grow…' : 'Search a playlist for misfits…'}
+            />
           ) : (
             <div className="seed-picker">
               <input placeholder="Search your library by title or artist" value={query} onChange={(e) => setQuery(e.target.value)} />
@@ -234,19 +410,33 @@ export default function Explore({ playlists, analysed, onChanged, onError, onNot
           const open = !collapsed.has(group);
           return (
             <section key={group} className="result-group">
-              <h3>
-                <button className="group-toggle" aria-expanded={open}
-                  onClick={() => setCollapsed((c) => {
-                    const next = new Set(c);
-                    if (open) next.add(group);
-                    else next.delete(group);
-                    return next;
-                  })}>
-                  <span className="chevron" aria-hidden>{open ? '▾' : '▸'}</span>
-                  {GROUP_TITLES[group].title} ({items.length})
-                  <span className="muted small">{GROUP_TITLES[group].note}</span>
+              <div className="group-header-row">
+                <h3>
+                  <button className="group-toggle" aria-expanded={open}
+                    onClick={() => setCollapsed((c) => {
+                      const next = new Set(c);
+                      if (open) next.add(group);
+                      else next.delete(group);
+                      return next;
+                    })}>
+                    <span className="chevron" aria-hidden>{open ? '▾' : '▸'}</span>
+                    {GROUP_TITLES[group].title} ({items.length})
+                    <span className="muted small">{GROUP_TITLES[group].note}</span>
+                  </button>
+                </h3>
+                <button
+                  type="button"
+                  className="ghost small"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void createFromGroup(group);
+                  }}
+                  disabled={busy}
+                  title={`Create a new playlist from ${items.length} songs`}
+                >
+                  Create playlist
                 </button>
-              </h3>
+              </div>
               {open && items.map((m) => (
                 <div key={m.track.id} className={`result${selected.has(m.track.id) ? ' selected' : ''}`}>
                   <div className="result-row">
@@ -266,8 +456,7 @@ export default function Explore({ playlists, analysed, onChanged, onError, onNot
                     <button className="ghost small" onClick={() => api.openInSpotify(m.track.uri).catch(onError)}>Spotify</button>
                   </div>
                   {preview === m.track.id && (
-                    <iframe className="player" title="Spotify player" src={`https://open.spotify.com/embed/track/${m.track.id}?theme=0`}
-                      allow="encrypted-media; clipboard-write" loading="lazy" />
+                    <Player trackId={m.track.id} onError={onError} />
                   )}
                 </div>
               ))}
@@ -281,25 +470,108 @@ export default function Explore({ playlists, analysed, onChanged, onError, onNot
           <span><strong>{selected.size}</strong> selected</span>
           <div className="spacer" />
           {mode === 'grow' && (
-            <button onClick={() => addTo(playlistId)} disabled={busy || selected.size === 0}>
-              Add {selected.size} to {byId.get(playlistId)?.name}
-            </button>
+            <>
+              {groups.some((g) => g.group === 'sound') && (
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => void createFromGroup('sound')}
+                  disabled={busy}
+                  title="Create a new playlist from songs that sound like this playlist"
+                >
+                  Create “Sounds like it” playlist ({(() => {
+                    const soundItems = results?.filter((m) => m.group === 'sound') ?? [];
+                    const sel = soundItems.filter((m) => selected.has(m.track.id)).length;
+                    return sel > 0 ? `${sel} selected` : soundItems.length;
+                  })()})
+                </button>
+              )}
+              {groups.some((g) => g.group === 'artist') && (
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => void createFromGroup('artist')}
+                  disabled={busy}
+                  title="Create a new playlist from songs by artists already in this playlist"
+                >
+                  Create “By artists in it” playlist ({(() => {
+                    const artistItems = results?.filter((m) => m.group === 'artist') ?? [];
+                    const sel = artistItems.filter((m) => selected.has(m.track.id)).length;
+                    return sel > 0 ? `${sel} selected` : artistItems.length;
+                  })()})
+                </button>
+              )}
+              <button onClick={() => addTo(playlistId)} disabled={busy || selected.size === 0}>
+                Add {selected.size} to {byId.get(playlistId)?.name}
+              </button>
+            </>
           )}
           {mode === 'misfits' && (
-            <button className={confirmRemove ? 'danger' : 'ghost'} onClick={remove} disabled={busy || selected.size === 0}>
-              {confirmRemove ? `Click again to remove ${selected.size} from Spotify` : `Remove ${selected.size} from ${byId.get(playlistId)?.name}`}
-            </button>
+            <>
+              {groups.some((g) => g.group === 'misfit') && (
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => void createFromGroup('misfit')}
+                  disabled={busy}
+                  title="Create a new playlist from these misfit songs"
+                >
+                  Create “Misfits” playlist ({(() => {
+                    const misfitItems = results?.filter((m) => m.group === 'misfit') ?? [];
+                    const sel = misfitItems.filter((m) => selected.has(m.track.id)).length;
+                    return sel > 0 ? `${sel} selected` : misfitItems.length;
+                  })()})
+                </button>
+              )}
+              <button className={confirmRemove ? 'danger' : 'ghost'} onClick={remove} disabled={busy || selected.size === 0}>
+                {confirmRemove ? `Click again to remove ${selected.size} from Spotify` : `Remove ${selected.size} from ${byId.get(playlistId)?.name}`}
+              </button>
+            </>
           )}
           {mode === 'seeds' && (
             <>
+              {groups.some((g) => g.group === 'sound') && (
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => void createFromGroup('sound')}
+                  disabled={busy}
+                  title="Create a new playlist from seeds and songs that sound like them"
+                >
+                  Create “Sounds like it” playlist ({(() => {
+                    const soundItems = results?.filter((m) => m.group === 'sound') ?? [];
+                    const sel = soundItems.filter((m) => selected.has(m.track.id)).length;
+                    return (sel > 0 ? sel : soundItems.length) + seeds.length;
+                  })()})
+                </button>
+              )}
+              {groups.some((g) => g.group === 'artist') && (
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => void createFromGroup('artist')}
+                  disabled={busy}
+                  title="Create a new playlist from seeds and songs by the same artists"
+                >
+                  Create “By artists in it” playlist ({(() => {
+                    const artistItems = results?.filter((m) => m.group === 'artist') ?? [];
+                    const sel = artistItems.filter((m) => selected.has(m.track.id)).length;
+                    return (sel > 0 ? sel : artistItems.length) + seeds.length;
+                  })()})
+                </button>
+              )}
               <select value={targetId} onChange={(e) => setTargetId(e.target.value)}>
                 <option value="">Add to playlist…</option>
                 {targets.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
               <button className="ghost" onClick={() => addTo(targetId)} disabled={busy || !targetId || selected.size === 0}>Add</button>
               <span className="muted small">or</span>
-              <input placeholder="New playlist name" value={newName} onChange={(e) => setNewName(e.target.value)} />
-              <button onClick={create} disabled={busy || !newName.trim()}
+              <input
+                placeholder={seeds[0]?.name ? `Similar to ${seeds[0].name}` : "New playlist name"}
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+              />
+              <button onClick={create} disabled={busy}
                 title="Creates a private playlist with your picked songs plus the selected results">
                 Create playlist
               </button>

@@ -187,6 +187,25 @@ r#"
 ALTER TABLE playlist_tracks ADD COLUMN position INTEGER;
 ALTER TABLE playlists ADD COLUMN synced_total INTEGER;
 ALTER TABLE playlists ADD COLUMN full_synced_at TEXT;
+"#,
+// For reviewing suggestions after months of real use: every playlist's score when a song was
+// staged (not just the 9 shown) with its sound and artist-history parts, the settings behind
+// them, and what was taken from Explore and where it sat in the results.
+r#"
+ALTER TABLE suggestion_log ADD COLUMN ranking TEXT;
+ALTER TABLE suggestion_log ADD COLUMN settings TEXT;
+CREATE TABLE explore_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          TEXT NOT NULL,
+    action      TEXT NOT NULL,  -- add | remove | create
+    mode        TEXT NOT NULL,  -- grow | misfits | seeds
+    source      TEXT,           -- the playlist searched, or the seed songs (JSON)
+    playlist_id TEXT,           -- where songs were added or removed
+    track_id    TEXT NOT NULL,
+    grp         TEXT,           -- sound | artist | misfit
+    rank        INTEGER,        -- 1-based position within its group
+    group_size  INTEGER
+);
 "#];
 
 pub fn open(path: &Path) -> AppResult<Connection> {

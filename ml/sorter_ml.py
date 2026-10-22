@@ -1,4 +1,4 @@
-"""Audio + lyrics suggestions for Spotify Sorter.
+    """Audio + lyrics suggestions for Spotify Sorter.
 
 Reads the app's SQLite database and:
   1. fills in features for songs that don't have them yet:
@@ -26,6 +26,9 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+_half_cpus = str(max(1, (os.cpu_count() or 4) // 2))
+os.environ.setdefault("OMP_NUM_THREADS", _half_cpus)
+os.environ.setdefault("MKL_NUM_THREADS", _half_cpus)
 
 import argparse
 import io
@@ -61,7 +64,7 @@ GENRE_WEIGHT = 0.6      # keep in sync with GENRE_WEIGHT in src-tauri/src/explor
 GENRE_MIN_SONGS = 5     # only genre tags shared by at least this many kept songs
 GENRE_TOP_TAGS = 5      # community tags per artist, most-voted first
 NEIGHBOURS = 120        # sound-alikes per song (best of 25/60/120 in cross-validation)
-HISTORY_WEIGHT = 2.0    # keep in sync with HISTORY_WEIGHT in src-tauri/src/sorting.rs
+HISTORY_WEIGHT = 0.2    # keep in sync with HISTORY_WEIGHT in src-tauri/src/sorting.rs (originally 2.0)
 
 KEEPER_KINDS = ("pool", "vibe", "exercise", "idea")
 # Songs the user kept (Skimmed Internal or a real playlist): the sound-alike reference library.
@@ -681,7 +684,7 @@ class Library:
             for aid, pos in self.artists[t]:
                 if not known[aid]:
                     continue
-                w = 1.0 if pos == 0 else 0.6
+                w = 1.0 if pos == 0 else 0.3  # featured artist weight (originally 0.6)
                 for pid, c in count[aid].items():
                     S[i, target_index[pid]] += w * c / (known[aid] + 1)
         return S
@@ -804,6 +807,12 @@ def score_liked(db):
     db.commit()
     set_meta(db, "trained_at", now())
     set_meta(db, "reference_songs", len(lib.universe))
+    # What produced these scores; the app copies it into each suggestion_log row so real-use
+    # accuracy can be compared across setting changes.
+    set_meta(db, "scoring", {
+        "audio_model": AUDIO_VERSION, "text_model": TEXT_MODEL, "lyrics_weight": LYRICS_WEIGHT,
+        "genre_weight": GENRE_WEIGHT, "genre_vocab": len(lib.genre_vocab), "neighbours": NEIGHBOURS,
+        "reference_songs": len(lib.universe), "targets": len(lib.targets)})
     emit("score", f"Scored {len(liked)} liked song{'s' if len(liked) != 1 else ''}", len(liked), len(liked))
 
 

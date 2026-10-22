@@ -82,6 +82,18 @@ export interface Match {
   reason: string;
 }
 
+/** A song taken from Explore's results and where it sat in them, logged for later review. */
+export interface ExplorePick {
+  trackId: string;
+  mode: 'grow' | 'misfits' | 'seeds';
+  /** The playlist searched, or the seed song IDs as JSON. */
+  source: string | null;
+  group: Match['group'];
+  /** 1-based position within its group. */
+  rank: number;
+  groupSize: number;
+}
+
 export interface SyncProgress { message: string; done: number; total: number }
 export interface SyncSummary {
   playlists: number;
@@ -116,15 +128,20 @@ export const api = {
   commit: () => invoke<CommitSummary>('commit'),
   revertLastCommit: () => invoke<CommitSummary>('revert_last_commit'),
   openInSpotify: (uri: string) => invoke<void>('open_in_spotify', { uri }),
+  /** Spotify's sign-in page in an app window, so the player embeds play full songs. */
+  spotifyWebLogin: () => invoke<void>('spotify_web_login'),
   exploreGrow: (playlistId: string, includeInternal: boolean) =>
     invoke<Match[]>('explore_grow', { playlistId, includeInternal }),
   exploreMisfits: (playlistId: string) => invoke<Match[]>('explore_misfits', { playlistId }),
   exploreSimilar: (trackIds: string[], includeInternal: boolean) =>
     invoke<Match[]>('explore_similar', { trackIds, includeInternal }),
   searchLibrary: (query: string) => invoke<Track[]>('search_library', { query }),
-  addTracks: (playlistId: string, trackIds: string[]) => invoke<number>('add_tracks', { playlistId, trackIds }),
-  removeTracks: (playlistId: string, trackIds: string[]) => invoke<number>('remove_tracks', { playlistId, trackIds }),
-  createPlaylist: (name: string, trackIds: string[]) => invoke<string>('create_playlist', { name, trackIds }),
+  addTracks: (playlistId: string, trackIds: string[], picks?: ExplorePick[]) =>
+    invoke<number>('add_tracks', { playlistId, trackIds, picks }),
+  removeTracks: (playlistId: string, trackIds: string[], picks?: ExplorePick[]) =>
+    invoke<number>('remove_tracks', { playlistId, trackIds, picks }),
+  createPlaylist: (name: string, trackIds: string[], picks?: ExplorePick[]) =>
+    invoke<string>('create_playlist', { name, trackIds, picks }),
 };
 
 export function onSyncProgress(cb: (p: SyncProgress) => void): Promise<UnlistenFn> {
@@ -133,6 +150,11 @@ export function onSyncProgress(cb: (p: SyncProgress) => void): Promise<UnlistenF
 
 export function onMlProgress(cb: (p: SyncProgress) => void): Promise<UnlistenFn> {
   return listen<SyncProgress>('ml-progress', (e) => cb(e.payload));
+}
+
+/** Fired when the Spotify sign-in window reaches the web player (signed in). */
+export function onSpotifyWebLogin(cb: () => void): Promise<UnlistenFn> {
+  return listen('spotify-web-login', () => cb());
 }
 
 /** Errors from Rust arrive as strings; login expiry is tagged so the UI can react. */

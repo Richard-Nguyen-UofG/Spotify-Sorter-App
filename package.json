@@ -7,9 +7,10 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "tauri": "tauri",
-    "app": "tauri dev",
-    "package": "tauri build"
+    "test": "node scripts/test.js",
+    "tauri": "node scripts/tauri.js",
+    "app": "node scripts/tauri.js dev",
+    "package": "node scripts/build.js"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",

@@ -166,6 +166,20 @@ pub struct CommitSummary {
     pub unliked: usize,
 }
 
+/// A song taken from Explore's results, and where it was in them (for explore_log).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplorePick {
+    pub track_id: String,
+    pub mode: String,
+    /// The playlist searched, or the seed song IDs as JSON.
+    pub source: Option<String>,
+    pub group: String,
+    /// 1-based position within its group.
+    pub rank: i64,
+    pub group_size: i64,
+}
+
 /// Real-use accuracy of the Suggested vibes row: committed songs where a vibe playlist was picked,
 /// and how many of them had a pick as the first suggestion, in the top 3, and among the 9.
 #[derive(Debug, Serialize, Default)]

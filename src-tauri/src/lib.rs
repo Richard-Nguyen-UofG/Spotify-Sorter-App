@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::params;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 use db::Db;
@@ -199,19 +199,42 @@ fn search_library(state: State<'_, AppState>, query: String) -> AppResult<Vec<mo
     explore::search(&db::lock(&state.db), &query)
 }
 
+// `picks` (from Explore) records where each song sat in the results; logged once Spotify accepts.
+
 #[tauri::command]
-async fn add_tracks(state: State<'_, AppState>, playlist_id: String, track_ids: Vec<String>) -> AppResult<usize> {
-    sorting::add_tracks(&state.db, &state.spotify, &playlist_id, &track_ids).await
+async fn add_tracks(
+    state: State<'_, AppState>,
+    playlist_id: String,
+    track_ids: Vec<String>,
+    picks: Option<Vec<model::ExplorePick>>,
+) -> AppResult<usize> {
+    let n = sorting::add_tracks(&state.db, &state.spotify, &playlist_id, &track_ids).await?;
+    sorting::log_explore(&db::lock(&state.db), "add", Some(&playlist_id), &picks.unwrap_or_default())?;
+    Ok(n)
 }
 
 #[tauri::command]
-async fn remove_tracks(state: State<'_, AppState>, playlist_id: String, track_ids: Vec<String>) -> AppResult<usize> {
-    sorting::remove_tracks(&state.db, &state.spotify, &playlist_id, &track_ids).await
+async fn remove_tracks(
+    state: State<'_, AppState>,
+    playlist_id: String,
+    track_ids: Vec<String>,
+    picks: Option<Vec<model::ExplorePick>>,
+) -> AppResult<usize> {
+    let n = sorting::remove_tracks(&state.db, &state.spotify, &playlist_id, &track_ids).await?;
+    sorting::log_explore(&db::lock(&state.db), "remove", Some(&playlist_id), &picks.unwrap_or_default())?;
+    Ok(n)
 }
 
 #[tauri::command]
-async fn create_playlist(state: State<'_, AppState>, name: String, track_ids: Vec<String>) -> AppResult<String> {
-    sorting::create_playlist(&state.db, &state.spotify, &name, &track_ids).await
+async fn create_playlist(
+    state: State<'_, AppState>,
+    name: String,
+    track_ids: Vec<String>,
+    picks: Option<Vec<model::ExplorePick>>,
+) -> AppResult<String> {
+    let id = sorting::create_playlist(&state.db, &state.spotify, &name, &track_ids).await?;
+    sorting::log_explore(&db::lock(&state.db), "create", Some(&id), &picks.unwrap_or_default())?;
+    Ok(id)
 }
 
 #[tauri::command]
@@ -308,6 +331,40 @@ fn open_in_spotify(app: AppHandle, uri: String) -> AppResult<()> {
         .map_err(|e| AppError::msg(e.to_string()))
 }
 
+/// Opens Spotify's own sign-in page in a small app window. The player embeds share this app's
+/// browser storage, so once signed in there they play full songs instead of 30 s previews (a
+/// browser where you're signed in to Spotify does the same). The window closes itself when
+/// Spotify sends it on to the web player, and the main window hears `spotify-web-login`.
+/// The window has no access to the app's commands (capabilities cover only "main").
+/// Async on purpose: a window built from a synchronous command hangs blank on Windows.
+#[tauri::command]
+async fn spotify_web_login(app: AppHandle) -> AppResult<()> {
+    const LABEL: &str = "spotify-web-login";
+    if let Some(w) = app.get_webview_window(LABEL) {
+        return w.set_focus().map_err(|e| AppError::msg(e.to_string()));
+    }
+    let url = "https://accounts.spotify.com/login?continue=https%3A%2F%2Fopen.spotify.com%2F"
+        .parse()
+        .map_err(|e: url::ParseError| AppError::msg(e.to_string()))?;
+    let handle = app.clone();
+    tauri::WebviewWindowBuilder::new(&app, LABEL, tauri::WebviewUrl::External(url))
+        .title("Sign in to Spotify for full-length playback")
+        .inner_size(480.0, 760.0)
+        .on_page_load(move |window, payload| {
+            let done = payload.event() == tauri::webview::PageLoadEvent::Finished
+                && payload.url().host_str() == Some("open.spotify.com");
+            if done {
+                let _ = handle.emit("spotify-web-login", ());
+                tauri::async_runtime::spawn(async move {
+                    let _ = window.close();
+                });
+            }
+        })
+        .build()
+        .map_err(|e| AppError::msg(e.to_string()))?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -353,6 +410,7 @@ pub fn run() {
             commit,
             revert_last_commit,
             open_in_spotify,
+            spotify_web_login,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Spotify Sorter");
